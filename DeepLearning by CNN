@@ -1,0 +1,112 @@
+import numpy as np
+import cv2
+import pandas as pd
+from glob import glob
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+from keras.utils.np_utils import to_categorical
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
+from keras.optimizers import Adam
+from keras.preprocessing.image import ImageDataGenerator
+
+# Define functions for LBP and LTP
+# Add the LBP and LTP functions here as per your code
+
+# Define image processing function
+def image_process(datasets):
+    features = []
+    labels = []
+
+    cnt1 = 1
+    for i in range(len(datasets)):
+        filename = datasets[i]
+        video = cv2.VideoCapture(filename)
+        while video.isOpened():
+            ret, frame = video.read()
+            if ret:
+                print("Preprocessing : ", count)
+                faces = faceCascade.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+
+                for (x, y, w, h) in faces:
+                    roi_color = frame[y:y + h, x:x + w]
+                    resized_face = cv2.resize(roi_color, (64, 64))
+                    grey_img = cv2.cvtColor(resized_face, cv2.COLOR_BGR2GRAY)
+                    ltp_image = LTP(grey_img)
+                    lbp_image = LBP(grey_img)
+                    feat = ltp_image + lbp_image
+                    features.append(feat)
+                    labels.append(i)
+                    cnt1 += 1
+        print()
+
+    return np.array(features), np.array(labels)
+
+# Load your dataset
+path = "Dataset"
+getallvideo = glob(path + '/**/*.mp4')
+X_train, Y_train = image_process(getallvideo)
+
+# Normalization and Reshaping
+X_train = X_train / 255.0
+X_train = X_train.reshape(-1, 64, 64, 1)
+Y_train = to_categorical(Y_train, num_classes=len(getallvideo))  # One-hot encode the labels
+
+# Split the data into training and validation sets
+X_train, X_val, Y_train, Y_val = train_test_split(X_train, Y_train, test_size=0.1, random_state=2)
+
+# Define CNN model
+model = Sequential()
+model.add(Conv2D(filters=8, kernel_size=(5, 5), padding='Same', activation='relu', input_shape=(64, 64, 1)))
+model.add(MaxPool2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
+model.add(Conv2D(filters=16, kernel_size=(3, 3), padding='Same', activation='relu'))
+model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
+model.add(Dropout(0.25))
+model.add(Flatten())
+model.add(Dense(256, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(len(getallvideo), activation='softmax'))
+
+# Compile the model
+optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999)
+model.compile(optimizer=optimizer, loss="categorical_crossentropy", metrics=["accuracy"])
+
+# Data augmentation
+datagen = ImageDataGenerator(
+    rotation_range=5,
+    zoom_range=0.1,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    horizontal_flip=False,
+    vertical_flip=False
+)
+datagen.fit(X_train)
+
+# Fit the model
+batch_size = 32
+epochs = 10
+history = model.fit_generator(datagen.flow(X_train, Y_train, batch_size=batch_size),
+                              epochs=epochs, validation_data=(X_val, Y_val), steps_per_epoch=X_train.shape[0] // batch_size)
+
+# Plot the validation loss
+plt.plot(history.history['val_loss'], color='b', label="validation loss")
+plt.title("Test Loss")
+plt.xlabel("Number of Epochs")
+plt.ylabel("Loss")
+plt.legend()
+plt.show()
+
+# Predictions and Confusion Matrix
+Y_pred = model.predict(X_val)
+Y_pred_classes = np.argmax(Y_pred, axis=1)
+Y_true = np.argmax(Y_val, axis=1)
+confusion_mtx = confusion_matrix(Y_true, Y_pred_classes)
+f, ax = plt.subplots(figsize=(8, 8))
+sns.heatmap(confusion_mtx, annot=True, linewidths=0.01, cmap="Greens", linecolor="gray", fmt='.1f', ax=ax)
+plt.xlabel("Predicted Label")
+plt.ylabel("True Label")
+plt.title("Confusion Matrix")
+plt.show()
