@@ -1,0 +1,30 @@
+def image_process(datasets):
+    features = []
+    labels = []
+
+    cnt1 = 1
+    for i in range(len(datasets)):
+        filename = datasets[i]
+        video = cv2.VideoCapture(filename)
+        while video.isOpened():
+            ret, frame = video.read()
+            if ret:
+                print("Preprocessing : ", count)
+                faces = faceCascade.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+
+                for (x, y, w, h) in faces:
+                    roi_color = frame[y:y + h, x:x + w]
+                    resized_face = cv2.resize(roi_color, (64, 64))
+                    grey_img = cv2.cvtColor(resized_face, cv2.COLOR_BGR2GRAY)
+                    ltp_image = LTP(grey_img)
+                    lbp_image = LBP(grey_img)
+                    feat = ltp_image + lbp_image
+                    features.append(feat)
+                    labels.append(i)
+                    cnt1 += 1
+            else:
+                break  # Exit the loop if video capture is not successful
+
+        video.release()
+
+    return np.array(features), np.array(labels)
