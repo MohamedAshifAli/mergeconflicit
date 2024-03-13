@@ -1,0 +1,22 @@
+
+for image in image_files:
+    filename = os.path.basename(image)
+    all_indexes = np.where(df['image_id'] == filename)[0]
+
+    img = cv2.imread(image)
+    cnt = 0
+    for crd in all_indexes:
+        coordinates = df['bounds'][all_indexes[0]]
+        xB = coordinates[2]
+        xA = coordinates[0]
+        yB = coordinates[3]
+        yA = coordinates[1]
+        cv2.rectangle(img, (xA, yA), (xB, yB), (0, 0, 255), 2)  # Draw a rectangle on the image
+        # print("x,y,w,h:", x, y, w, h)
+        filename = 'Datasets\\Frames\\detectedimg__' + str(cnt) + '.png'
+        cnt+=1
+    cv2.imwrite(filename, img)
+
+
+
+
