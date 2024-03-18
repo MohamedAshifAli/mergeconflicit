@@ -1,0 +1,14 @@
+def preprocessing_feature_extraction():
+    images = np.load("Features/Images1.npy")
+    all_outputs = []
+    cntt=0
+    batch_size = 100  # Define the batch size
+    for i in range(0, len(images), batch_size):
+        end_index = min(i + batch_size, len(images))  # Calculate the end index for slicing
+        output = WNet_train(images[i:end_index])  # Process the batch of images
+        for k in output:
+            all_outputs.append(k)
+
+    all_outputss = np.asarray(all_outputs)
+    np.save("segmentatione.npy", all_outputs)
+
