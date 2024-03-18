@@ -1,0 +1,570 @@
+import os
+import numpy as np
+import pandas as pd
+from numpy.random import seed
+import ast
+seed(1)
+import tensorflow
+tensorflow.random.set_seed(2)
+import tensorflow as tf
+from keras.layers import BatchNormalization
+from glob import glob
+import cv2
+import warnings
+warnings.filterwarnings('ignore',category= UserWarning)
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+from glob import glob
+
+import cv2
+from skimage.feature import graycomatrix, graycoprops
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def f(x):
+    return ast.literal_eval(x.rstrip('\r\n')) #convrt the annotations strings into their original data types integr for the usage in nprogram
+
+
+def getBounds(geometry):#gettg the calculated bounding box coordinates xmin, ymin, xmax, ymax.
+
+    try:
+        arr = np.array(geometry).T
+        xmin = np.min(arr[0])
+        ymin = np.min(arr[1])
+        xmax = np.max(arr[0])
+        ymax = np.max(arr[1])
+        return (xmin, ymin, xmax, ymax)
+    except:
+        return np.nan
+
+
+def getWidth(bounds): #gettg widh
+    try:
+        (xmin, ymin, xmax, ymax) = bounds
+        return np.abs(xmax - xmin)
+    except:
+        return np.nan
+
+
+def getHeight(bounds):#gettg height points from annottaions
+    try:
+        (xmin, ymin, xmax, ymax) = bounds
+        return np.abs(ymax - ymin)
+    except:
+        return np.nan
+
+
+def upconv_concat(bottom_a, bottom_b, n_filter, k_size, stride, padding='VALID'):
+    up_conv = tf.layers.conv2d_transpose(bottom_a, filters=n_filter, kernel_size=[k_size, k_size],
+                                         strides=stride, padding=padding)
+    return tf.concat([up_conv, bottom_b], axis=-1)
+
+
+def conv_layer(bottom, k_size, num_outputs, stride, padding='SAME'):
+    input_channels = int(bottom.get_shape()[-1])
+    weights = tf.Variable(tf.truncated_normal(shape=[k_size, k_size, input_channels, num_outputs], dtype=tf.float32,
+                                              stddev=np.sqrt(1.0 / (k_size * k_size * input_channels))))
+    biases = tf.Variable(tf.constant(0, dtype=tf.float32, shape=[num_outputs]))
+    conv = tf.nn.conv2d(bottom, weights, strides=[1, stride, stride, 1], padding=padding)
+    bias = tf.reshape(tf.nn.bias_add(conv, biases), tf.shape(conv))
+    relu = tf.nn.relu(bias)
+
+    return relu
+
+
+def calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_kernel, batch_size):#lox calucltion
+    num_sum = tf.constant(0.0, dtype=tf.float32)
+    for depth in range(num_outputs):
+        softmax_layer = encoder_output[:, :, :,
+                        depth:depth + 1]  # take each channel of the output image from encoder_model
+        extracted_pixels = tf.nn.conv2d(softmax_layer, one_dim_kernel, strides=[1, 1, 1, 1], padding='SAME')
+
+        intensity_sq_dif = tf.squared_difference(extracted_pixels, softmax_layer)
+        intensity_values = tf.exp(tf.divide(tf.negative(intensity_sq_dif), sigma_pixel))
+
+        weights = tf.multiply(intensity_values, spatial_kernel)
+        # Reshape Input Softmax Layer for correct dimensions
+        # u_pixels = tf.reshape(softmax_layer, [batch_size, 224, 224])
+        u_pixels = tf.reshape(softmax_layer, [tf.shape(encoder_output)[0], 224, 224])  # Use tf.shape to get the batch size dynamically
+
+
+        # Calculate entire numerator
+        numerator_inner_sum = tf.reduce_sum(tf.multiply(weights, extracted_pixels), axis=3)
+        numerator_outer_sum = tf.multiply(u_pixels, numerator_inner_sum)
+        numerator = tf.reduce_sum(numerator_outer_sum)
+
+        # Calculate denominator
+        denominator_inner_sum = tf.reduce_sum(weights, axis=3)
+        denominator_outer_sum = tf.multiply(u_pixels, denominator_inner_sum)
+        denominator = tf.reduce_sum(denominator_outer_sum)
+
+        processed_value = numerator / denominator
+        num_sum += processed_value
+
+    return num_outputs - num_sum
+
+
+def WNet_train(X_train):
+    X_train = X_train.astype('float32') / 255.  # Standardizing the data
+    X_train = np.reshape(X_train, (len(X_train), 224, 224, 1))  # reshape it to (1140, 224, 224, 1) for feeding to model
+
+    height = width = 224
+    channels = 1
+    keep_prob = tf.placeholder_with_default(1.0, shape=())
+    num_outputs = 3  # background, cell.
+    num_epochs = 15
+    batch_size = 4
+    r = 5
+    sigma_dist = 4
+    sigma_pixel = tf.square(tf.constant(10.0))
+    input_img = tf.placeholder(dtype=tf.float32, shape=[None, height, width, channels], name='input_tensor')
+    variance_epsilon = 0.0001
+    with tf.name_scope('Encoder'):
+        conv_1_1 = tf.layers.conv2d(input_img, 64, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_1_1, [0, 1, 2])
+        # conv_1_1_bn = Batch_Normalization(conv_1_1, mean, variance, None, None, variance_epsilon)
+        conv_1_1_bn = BatchNormalization(epsilon=variance_epsilon)(conv_1_1)
+
+        conv_1_1_drop = tf.layers.dropout(conv_1_1_bn, keep_prob)
+        conv_1_2 = tf.layers.conv2d(conv_1_1_drop, 64, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_1_2, [0, 1, 2])
+        conv_1_2_bn = tf.nn.batch_normalization(conv_1_2, mean, variance, None, None, variance_epsilon)
+        conv_1_2_drop = tf.layers.dropout(conv_1_2_bn, keep_prob)
+
+        pool_1 = tf.layers.max_pooling2d(conv_1_2_drop, pool_size=2, strides=2, padding="valid")
+
+        conv_2_1 = tf.layers.separable_conv2d(pool_1, 128, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_2_1, [0, 1, 2])
+        conv_2_1_bn = tf.nn.batch_normalization(conv_2_1, mean, variance, None, None, variance_epsilon)
+        conv_2_1_drop = tf.layers.dropout(conv_2_1_bn, keep_prob)
+
+        conv_2_2 = tf.layers.separable_conv2d(conv_2_1_drop, 128, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_2_2, [0, 1, 2])
+        conv_2_2_bn = tf.nn.batch_normalization(conv_2_2, mean, variance, None, None, variance_epsilon)
+        conv_2_2_drop = tf.layers.dropout(conv_2_2_bn, keep_prob)
+
+        pool_2 = tf.layers.max_pooling2d(conv_2_2_drop, pool_size=2, strides=2, padding="valid")
+
+        conv_3_1 = tf.layers.separable_conv2d(pool_2, 256, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_3_1, [0, 1, 2])
+        conv_3_1_bn = tf.nn.batch_normalization(conv_3_1, mean, variance, None, None, variance_epsilon)
+        conv_3_1_drop = tf.layers.dropout(conv_3_1_bn, keep_prob)
+
+        conv_3_2 = tf.layers.separable_conv2d(conv_3_1_drop, 256, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_3_2, [0, 1, 2])
+        conv_3_2_bn = tf.nn.batch_normalization(conv_3_2, mean, variance, None, None, variance_epsilon)
+        conv_3_2_drop = tf.layers.dropout(conv_3_2_bn, keep_prob)
+
+        pool_3 = tf.layers.max_pooling2d(conv_3_2_drop, pool_size=2, strides=2, padding="valid")
+
+        conv_4_1 = tf.layers.separable_conv2d(pool_3, 512, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_4_1, [0, 1, 2])
+        conv_4_1_bn = tf.nn.batch_normalization(conv_4_1, mean, variance, None, None, variance_epsilon)
+        conv_4_1_drop = tf.layers.dropout(conv_4_1_bn, keep_prob)
+
+        conv_4_2 = tf.layers.separable_conv2d(conv_4_1_drop, 512, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_4_2, [0, 1, 2])
+        conv_4_2_bn = tf.nn.batch_normalization(conv_4_2, mean, variance, None, None, variance_epsilon)
+        conv_4_2_drop = tf.layers.dropout(conv_4_2_bn, keep_prob)
+
+        pool_4 = tf.layers.max_pooling2d(conv_4_2_drop, pool_size=2, strides=2, padding="valid")
+
+        conv_5_1 = tf.layers.separable_conv2d(pool_4, 1024, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_5_1, [0, 1, 2])
+        conv_5_1_bn = tf.nn.batch_normalization(conv_5_1, mean, variance, None, None, variance_epsilon)
+        conv_5_1_drop = tf.layers.dropout(conv_5_1_bn, keep_prob)
+
+        conv_5_2 = tf.layers.separable_conv2d(conv_5_1_drop, 1024, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_5_2, [0, 1, 2])
+        conv_5_2_bn = tf.nn.batch_normalization(conv_5_2, mean, variance, None, None, variance_epsilon)
+        conv_5_2_drop = tf.layers.dropout(conv_5_2_bn, keep_prob)
+
+        upconv_1 = upconv_concat(conv_5_2_drop, conv_4_2_drop, n_filter=512, k_size=2, stride=2)
+
+        conv_6_1 = tf.layers.separable_conv2d(upconv_1, 512, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_6_1, [0, 1, 2])
+        conv_6_1_bn = tf.nn.batch_normalization(conv_6_1, mean, variance, None, None, variance_epsilon)
+        conv_6_1_drop = tf.layers.dropout(conv_6_1_bn, keep_prob)
+
+        conv_6_2 = tf.layers.separable_conv2d(conv_6_1_drop, 512, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_6_2, [0, 1, 2])
+        conv_6_2_bn = tf.nn.batch_normalization(conv_6_2, mean, variance, None, None, variance_epsilon)
+        conv_6_2_drop = tf.layers.dropout(conv_6_2_bn, keep_prob)
+
+        upconv_2 = upconv_concat(conv_6_2_drop, conv_3_2_drop, n_filter=256, k_size=2, stride=2)
+
+        conv_7_1 = tf.layers.separable_conv2d(upconv_2, 256, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_7_1, [0, 1, 2])
+        conv_7_1_bn = tf.nn.batch_normalization(conv_7_1, mean, variance, None, None, variance_epsilon)
+        conv_7_1_drop = tf.layers.dropout(conv_7_1_bn, keep_prob)
+
+        conv_7_2 = tf.layers.separable_conv2d(conv_7_1_drop, 256, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_7_2, [0, 1, 2])
+        conv_7_2_bn = tf.nn.batch_normalization(conv_7_2, mean, variance, None, None, variance_epsilon)
+        conv_7_2_drop = tf.layers.dropout(conv_7_2_bn, keep_prob)
+
+        upconv_3 = upconv_concat(conv_7_2_drop, conv_2_2_drop, n_filter=128, k_size=2, stride=2)
+
+        conv_8_1 = tf.layers.separable_conv2d(upconv_3, 128, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_8_1, [0, 1, 2])
+        conv_8_1_bn = tf.nn.batch_normalization(conv_8_1, mean, variance, None, None, variance_epsilon)
+        conv_8_1_drop = tf.layers.dropout(conv_8_1_bn, keep_prob)
+
+        conv_8_2 = tf.layers.separable_conv2d(conv_8_1_drop, 128, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_8_2, [0, 1, 2])
+        conv_8_2_bn = tf.nn.batch_normalization(conv_8_2, mean, variance, None, None, variance_epsilon)
+        conv_8_2_drop = tf.layers.dropout(conv_8_2_bn, keep_prob)
+
+        upconv_4 = upconv_concat(conv_8_2_drop, conv_1_2_drop, n_filter=64, k_size=2, stride=2)
+
+        conv_9_1 = tf.layers.separable_conv2d(upconv_4, 64, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_9_1, [0, 1, 2])
+        conv_9_1_bn = tf.nn.batch_normalization(conv_9_1, mean, variance, None, None, variance_epsilon)
+        conv_9_1_drop = tf.layers.dropout(conv_9_1_bn, keep_prob)
+
+        conv_9_2 = tf.layers.separable_conv2d(conv_9_1_drop, 64, 3, padding='same', activation='relu')
+        mean, variance = tf.nn.moments(conv_9_2, [0, 1, 2])
+        conv_9_2_bn = tf.nn.batch_normalization(conv_9_2, mean, variance, None, None, variance_epsilon)
+        conv_9_2_drop = tf.layers.dropout(conv_9_2_bn, keep_prob)
+
+        conv = tf.layers.conv2d(conv_9_2_drop, num_outputs, kernel_size=1, strides=1, padding='same', activation='relu')
+        print(conv.shape, "conv")
+        encoder_output = tf.nn.softmax(conv, axis=3, name="output_tensor")
+
+    init = tf.global_variables_initializer()
+
+    s = 2 * r + 1
+    spatial_kernel = np.zeros((s, s), dtype=np.float32)
+    for y in range(s):
+        for x in range(s):
+            # calculate squared euclidean distance
+            dist = (x - r) * (x - r) + (y - r) * (y - r)
+            if dist < (r * r):
+                spatial_kernel[y][x] = np.exp((-dist) / sigma_dist)
+
+    spatial_kernel = tf.constant(spatial_kernel.reshape(-1), dtype=tf.float32)
+
+    # create one dimensional kernel
+
+    s = 2 * r + 1
+    one_dim_kernel = np.zeros((s, s, (s * s)))
+    for i in range(s * s):
+        one_dim_kernel[int(i / s)][i % s][i] = 1.0
+    one_dim_kernel = one_dim_kernel.reshape(s, s, 1, (s * s))
+    one_dim_kernel = tf.constant(one_dim_kernel, dtype=tf.float32)
+
+    loss = calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_kernel, batch_size)
+    soft_cut_norm_loss = tf.reduce_mean(loss)
+    with tf.name_scope("optimizer"):
+        norm_cut_opt = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(soft_cut_norm_loss)  # optimizer
+
+    init = tf.global_variables_initializer()
+
+    with tf.Session() as sess:
+        sess.run(init)
+        for epoch in range(num_epochs):
+            print("epoch:", epoch)
+            count = 0
+            batch_start_index = 0
+            while (count != 1):
+                X_train_batch = X_train[batch_start_index: batch_start_index + batch_size]
+                _, train_loss = sess.run([norm_cut_opt, soft_cut_norm_loss],
+                                         feed_dict={input_img: X_train_batch, keep_prob: 0.7})
+                batch_start_index += batch_size
+                count += 1
+            print("Train loss after epoch ", str(epoch), "is", str(train_loss))
+        #     saved_path = saver.save(sess, './my-model')
+        output_graph_def = tf.graph_util.convert_variables_to_constants(sess, sess.graph.as_graph_def(),
+                                                                        ["Encoder/output_tensor"])
+        with tf.gfile.GFile("wnetmodel.pb", "wb") as f:
+            f.write(output_graph_def.SerializeToString())
+
+    with tf.Session() as sess:
+        sess.run(init)
+        #     saver.restore(sess, './my-model')
+        output = sess.run(encoder_output, feed_dict={input_img: X_train})
+    return output
+
+
+def preprocessing_object_detection():
+    # Features = []
+    # label = []
+    df = pd.read_csv("Datasets/annotations.csv", converters={'geometry': f})
+
+    # Create bounds, width, and height
+    df['bounds'] = df['geometry'].apply(getBounds)
+    df['width'] = df['bounds'].apply(getWidth)
+    df['height'] = df['bounds'].apply(getHeight)
+
+    image_files = glob('Datasets/images/*.*')
+    Features = []
+    labels = []
+    cnt = 0
+    for image in image_files:
+        filename = os.path.basename(image)
+        all_indexes = np.where(df['image_id'] == filename)[0]
+        img = cv2.imread(image)
+        image = img
+
+        for ind in all_indexes:
+            img = image.copy()
+            labels.append(df['class'][ind])
+
+            coordinates = df['bounds'][ind]
+            xB = coordinates[2]
+            xA = coordinates[0]
+            yB = coordinates[3]
+            yA = coordinates[1]
+            cv2.rectangle(img, (xA, yA), (xB, yB), (0, 0, 0), 10)
+            img = img[yA:yB, xA:xB]
+            filename = 'sgmntdobjcts\\imgg__' + str(cnt) + '.jpg'
+            cnt += 1
+            cv2.imwrite(filename, img)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Convert images to Grayscale
+            resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)  # Resize image to (224, 224)
+            Features.append(resized)  # append to list
+        cv2.waitKey(0)
+
+    cv2.destroyAllWindows()
+
+    feat = np.asarray(Features)
+    lab = np.asarray(labels)
+
+    np.save("Features/Images1.npy", feat)
+    np.save("Features/labels.1npy", lab)
+
+# Call the preprocessing function
+# preprocessing_object_detection()
+
+
+import matplotlib.pyplot as plt
+
+
+def preprocessing_feature_extraction():
+    images = np.load("Features/Images1.npy")
+    all_outputs = []
+    cntt=0
+    for i in range(0, len(images), 5):
+        output = WNet_train(images[i:i + 5])
+        for k in output:
+            filename = 'WNetoutputimages\\wimgg__' + str(cntt) + '.jpg'
+            cntt += 1
+            cv2.imwrite(filename, k)
+            plt.imshow(k)
+            plt.axis('off')  # Hide axis
+            plt.show()
+    #         all_outputs.append(k)
+    # all_outputss = np.asarray(all_outputs)
+    # np.save("segmentatione.npy", all_outputs)
+
+        # all_outputs.append(output)
+
+
+
+    # Display all the outputs without saving to a numpy array
+    # for output in all_outputs:
+
+    # all_outputs = np.asarray(all_outputs)
+    # np.save("segmentation.npy", all_outputs)
+    # # Load the saved numpy array and display it
+    # loaded_outputs = np.load("segmentation.npy")
+    # plt.imshow(loaded_outputs[0])  # Assuming the output is the first image in the array
+    # plt.axis('off')  # Hide axis
+    # plt.show()
+preprocessing_feature_extraction()
+
+
+#GLCM FEatures
+def texture_extract(img):
+    distance = [1]
+    angles = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+    properties = ['correlation', 'homogeneity', 'contrast', 'energy', 'dissimilarity']
+
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray_img, (5,5), 0)
+
+    texture_features = []
+    for i in range(0, blur.shape[0], 4):
+        for j in range(0, blur.shape[1], 4):
+            block = blur[i:i+4, j:j+4]
+
+            glcm_mat = graycomatrix(block, distances=distance, angles=angles, symmetric=True, normed=True)
+            block_glcm = np.hstack([graycoprops(glcm_mat, props).ravel() for props in properties])
+            texture_features.append(block_glcm)
+
+    return np.concatenate(texture_features)
+
+image_files = glob('WNetoutputimages/*.*')
+
+for filename in image_files:
+    img = cv2.imread(filename)
+    plt.imshow(img)
+    plt.axis('off')
+    plt.show()
+
+#/////REsnEt 101
+from glob import glob
+
+import cv2
+import numpy as np
+from matplotlib import pyplot as plt
+from tensorflow.keras.applications import ResNet101
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dropout, Flatten, BatchNormalization, Dense, Activation
+
+
+def create_resnet_model(input_shape=(224, 224, 3), num_classes=4):
+    base_model = ResNet101(include_top=False, weights='imagenet', input_shape=input_shape)
+
+    x = base_model.output
+    x = Dropout(0.5)(x)
+    x = Flatten()(x)
+    x = BatchNormalization()(x)
+    x = Dense(1024, kernel_initializer='he_uniform')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.5)(x)
+    x = Dense(1024, kernel_initializer='he_uniform')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.5)(x)
+    x = Dense(1024, kernel_initializer='he_uniform')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.5)(x)
+
+    predictions = Dense(num_classes, activation='softmax')(x)
+
+    model = Model(inputs=base_model.input, outputs=predictions)
+
+    return model
+
+
+# Create the model
+model = create_resnet_model()
+model.summary()
+
+image_files = glob('WNetoutputimages/*.*')
+all_predictions = []
+
+# Load and process each image file
+for image_path in image_files:
+    img = cv2.imread(image_path)  # Read the image using OpenCV
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB (OpenCV reads images in BGR format)
+    img = cv2.resize(img, (224, 224))  # Resize the image to match the model input shape
+    img = np.expand_dims(img, axis=0)  # Add batch dimension
+
+    # Predict using the model
+    predictions = model.predict(img)
+    all_predictions.append(predictions)
+
+
+
+    # Display the image and predictions
+    plt.imshow(img[0])  # Display the image
+
+    plt.axis('off')  # Hide axis
+    plt.show()
+
+np.save("predictions.npy", all_predictions)
+
+
+#///////Canny extraction
+
+
+import cv2
+from glob import glob
+from matplotlib import pyplot as plt
+
+def edge_detection(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    assert img is not None, f"File {image_path} could not be read"
+
+    edges = cv2.Canny(img, 100, 200)  # Add threshold2 value (e.g., 200)
+
+    plt.subplot(121), plt.imshow(img, cmap='gray')
+    plt.title('Original Image'), plt.xticks([]), plt.yticks([])
+    plt.subplot(122), plt.imshow(edges, cmap='gray')
+    plt.title('Edge Image'), plt.xticks([]), plt.yticks([])
+
+    plt.show()
+
+    return edges
+
+
+def process_edge_detection(image_folder):
+    image_files = glob(image_folder)
+    cnt = 0
+    for image_path in image_files:
+        edge_image = edge_detection(image_path)
+        filename = 'shapedobjects\\imgg__' + str(cnt) + '.jpg'
+        cv2.imwrite(filename, edge_image)
+        cnt += 1
+
+
+process_edge_detection('sgmntdobjcts/*.*')
+
+#////LDP Pattern
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from glob import glob
+
+def calculate_ldp(image_path):
+    I = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    assert I is not None, f"File {image_path} could not be read"
+
+    m, n = I.shape
+    z = np.zeros(8)
+    b = np.zeros((m, n))
+
+    msk = np.array([
+        [[-3, -3, 5], [-3, 0, 5], [-3, -3, 5]],  # East
+        [[-3, 5, 5], [-3, 0, 5], [-3, -3, -3]],  # North-East
+        [[5, 5, 5], [-3, 0, -3], [-3, -3, -3]]  # North
+    ])
+
+    for i in range(1, m - 1):
+        for j in range(1, n - 1):
+            t = 0
+            for k in range(-1, 2):
+                for l in range(-1, 2):
+                    if k != 0 or l != 0:
+                        if t < 3:  # Ensure t is within the bounds of the third axis of msk
+                            z[t] = I[i + k, j + l] * msk[k + 1, l + 1, t]
+                            t += 1
+
+            q = np.argsort(z)
+            g = 4
+            z[q[:g]] = 0
+            z[q[g:]] = 1
+
+            for t in range(8):
+                b[i, j] += 2**t * z[t]
+
+    b = ((b - np.min(b)) * 255 / (np.max(b) - np.min(b))).astype(np.uint8)
+
+    return b
+
+
+def process_ldp_images(image_folder):
+    image_files = glob(image_folder)
+    cntt = 0
+    for idx in range(len(image_files)):
+        image_path = image_files[idx]
+        ldp_image = calculate_ldp(image_path)
+        plt.imshow(ldp_image, cmap='gray')
+        plt.axis('off')
+        plt.show()
+        filename = 'shapedobjects\\imgg__' + str(cntt) + '.jpg'
+        cv2.imwrite(filename, ldp_image)
+        cntt += 1
+        cv2.imwrite(filename, ldp_image)
+
+# Process LDP images in the "WNetoutputimages" folder
+process_ldp_images('WNetoutputimages/*.*')
+
+
+
