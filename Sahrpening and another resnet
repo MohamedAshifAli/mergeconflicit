@@ -1,0 +1,205 @@
+#shrpen the image
+# from glob import glob
+#
+# import cv2
+# import matplotlib.pyplot as plt
+# import numpy as np
+#
+# def sharpen(img):
+# # Load the image
+#     image = cv2.imread(img)
+#
+# # Create the sharpening kernel
+#     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+#
+# # Sharpen the image
+#     sharpened_image = cv2.filter2D(image, -1, kernel)
+#
+#
+#
+#
+#     return sharpened_image
+#
+#
+# def funt_call(img):
+#     alls = []
+#     cnt = 0
+#     for i in img:
+#         x = i
+#         shrp = sharpen(x)
+#         reshaped_image = cv2.resize(shrp, (224, 224))
+#         filename = 'Sharpened Objects\\sharpu__' + str(cnt) + '.jpg'
+#         # cv2.imwrite(filename, reshaped_image)
+#         cnt += 1
+#         alls.append(reshaped_image)
+#
+#     all_sharpened_images_array = np.asarray(alls)
+#     np.save("Features/sharpened_images.npy", all_sharpened_images_array)
+#
+#
+# get = glob("Detected Objects/*.*")
+# funt_call(get)
+#
+#
+#
+#
+# # Import the necessary libraries
+# from glob import glob
+#
+# import cv2
+# import matplotlib.pyplot as plt
+# import numpy as np
+#
+#
+# # Load the image
+# def enhnce(img):
+#
+#
+#     imgg = cv2.imread(img)
+#     # grayscale_image = cv2.cvtColor(imgg, cv2.COLOR_BGR2GRAY)
+#     # resized_img = cv2.resize(imgg, (224, 224), interpolation=cv2.INTER_AREA)
+#
+#     gray_img = cv2.cvtColor(imgg, cv2.COLOR_BGR2GRAY).astype(np.float32)
+#     inverse_image = 255 - gray_img
+#
+#     # cv2.imwrite('inverse_image.jpg', inverse_image)
+#
+#     # plt.imshow(inverse_image)
+#     # plt.show()
+#     return inverse_image
+# # X = np.load("segmentatione.npy")
+#
+# def funt(img):
+#     all = []
+#     cnt = 0
+#     for i in img:
+#         x = i
+#         enhncee = enhnce(x)
+#         # resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
+#
+#         reshaped_image = cv2.resize(enhncee, (224, 224))
+#         filename = 'shapedobjects\\enhnce__' + str(cnt) + '.jpg'
+#         cv2.imwrite(filename, reshaped_image)
+#         cnt += 1
+#         all.append(reshaped_image)
+#
+#     all_enhanced_images_array = np.asarray(all)
+#
+#     # all.append(all_enhanced_images_array)
+#     np.save("Features/enhanced_images.npy", all_enhanced_images_array)
+#
+#         # plt.imshow(reshaped_image)
+#         # plt.show()
+#
+#
+#     return reshaped_image
+#
+#
+#
+#
+# get = glob("Detected Objects/*.*")
+# funt(get)
+#
+from glob import glob
+
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from keras import Model
+from keras.applications import ResNet101
+from keras.layers import BatchNormalization, Dropout, Activation, Flatten, Dense
+
+
+# def preprocessing_feature_extraction():
+#     images = glob("Sharpened Objects/*.*")
+#
+#     all_outputs = []
+#     cntt = 0
+#     batch_size = 50
+#     for i in range(0, len(images), batch_size):
+#         end_index = min(i + batch_size, len(images))
+#         batch_images = []
+#         for img_path in images[i:end_index]:
+#             # Load the image
+#             img = cv2.imread(img_path)
+#             # Convert to grayscale
+#             gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+#
+#             # Resize the image to (224, 224)
+#             resized_img = cv2.resize(img, (224, 224))
+#             # Add the preprocessed image to the batch
+#             batch_images.append(resized_img)
+#         # Convert the batch to numpy array
+#         batch_images = np.array(batch_images)
+#         # Reshape the batch to add channel dimension
+#         batch_images = np.expand_dims(batch_images, axis=-1)
+#         # Perform the training on the batch
+#         output = WNet_train(batch_images)
+#         # Append the outputs to the list
+#         all_outputs.extend(output)
+#         # Plot the images if needed
+#         for k in output:
+#             plt.imshow(k)
+#             plt.show()
+#
+#     # Convert the outputs to numpy array
+#     all_outputs = np.array(all_outputs)
+#     # Save the outputs if needed
+#     np.save("Sharpedsegmentatione.npy", all_outputs)
+#
+##another resnet model
+# import matplotlib.pyplot as plt
+# import numpy as np
+# from tensorflow.keras.preprocessing.image import load_img, img_to_array
+# from tensorflow.keras.applications.resnet import preprocess_input, decode_predictions
+# from tensorflow.keras.applications.resnet import ResNet101
+#
+# # Load and preprocess the image
+# img_path = 'shapedobjects/enhnce__8.jpg'
+# img = load_img(img_path, target_size=(224, 224))
+# x = img_to_array(img)
+# x = np.expand_dims(x, axis=0)
+# x = preprocess_input(x)
+#
+# # Load ResNet-101 model
+# model = ResNet101(weights='imagenet')
+#
+# # Make predictions
+# preds = model.predict(x)
+#
+# # Decode the predictions
+# decoded_preds = decode_predictions(preds, top=3)[0]
+#
+# # Reshape the image for visualization
+# img_array = x.squeeze()  # Remove the batch dimension
+# img_array = img_array.astype(np.uint8)  # Convert to uint8 for correct display
+#
+# # Display the reshaped image
+# plt.imshow(img_array)
+# plt.title('Input Image')
+# plt.axis('off')
+# plt.show()
+#
+# print('Predictions:')
+# for pred in decoded_preds:
+#     print(f'{pred[1]}: {pred[2]}')
+#
+#
+#
+#
+#
+
+
+
+
+
+
+# ////////////////////////////////////////////////////////// # Resnet 101
+import numpy as np
+from keras.applications.resnet import ResNet101
+from keras.layers import Dense, Dropout, Flatten, BatchNormalization, Activation
+from keras.models import Model
+
+
+
+
