@@ -1,8 +1,33 @@
 import os
-import numpy as np
+
+import keras
 import pandas as pd
+import smote
+from keras import Model
+from keras.applications import ResNet101
+from keras.layers import BatchNormalization, Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D
+from keras.utils import to_categorical
+from matplotlib import image as mpimg
+from skimage import color
+from skimage.feature import graycoprops, graycomatrix
+from skimage.util import img_as_ubyte
+from glob import glob
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 from numpy.random import seed
 import ast
+from glob import glob
+import cv2
+from PIL import Image
+import matplotlib.pyplot as plt
+import numpy as np
+from skimage.feature import graycomatrix, graycoprops
+from sklearn.metrics import multilabel_confusion_matrix, confusion_matrix
+from termcolor import colored
+
+# from ExplainbleCNN import model
+
 seed(1)
 import tensorflow
 tensorflow.random.set_seed(2)
@@ -10,17 +35,15 @@ import tensorflow as tf
 from keras.layers import BatchNormalization
 from glob import glob
 import cv2
+import matplotlib.pyplot as plt
+import tensorflow.compat.v1 as tf
 import warnings
 warnings.filterwarnings('ignore',category= UserWarning)
-import tensorflow.compat.v1 as tf
+from tensorflow.keras.applications import ResNet101
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dropout, Flatten, BatchNormalization, Dense, Activation
+
 tf.disable_v2_behavior()
-from glob import glob
-
-import cv2
-from skimage.feature import graycomatrix, graycoprops
-import numpy as np
-import matplotlib.pyplot as plt
-
 
 def f(x):
     return ast.literal_eval(x.rstrip('\r\n')) #convrt the annotations strings into their original data types integr for the usage in nprogram
@@ -85,9 +108,7 @@ def calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_
 
         weights = tf.multiply(intensity_values, spatial_kernel)
         # Reshape Input Softmax Layer for correct dimensions
-        # u_pixels = tf.reshape(softmax_layer, [batch_size, 224, 224])
-        u_pixels = tf.reshape(softmax_layer, [tf.shape(encoder_output)[0], 224, 224])  # Use tf.shape to get the batch size dynamically
-
+        u_pixels = tf.reshape(softmax_layer, [batch_size, 224, 224])
 
         # Calculate entire numerator
         numerator_inner_sum = tf.reduce_sum(tf.multiply(weights, extracted_pixels), axis=3)
@@ -113,8 +134,8 @@ def WNet_train(X_train):
     channels = 1
     keep_prob = tf.placeholder_with_default(1.0, shape=())
     num_outputs = 3  # background, cell.
-    num_epochs = 15
-    batch_size = 4
+    num_epochs = 1500
+    batch_size = 0
     r = 5
     sigma_dist = 4
     sigma_pixel = tf.square(tf.constant(10.0))
@@ -286,285 +307,481 @@ def WNet_train(X_train):
         output = sess.run(encoder_output, feed_dict={input_img: X_train})
     return output
 
+def sharpen(img):
+
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened_image = cv2.filter2D(img, -1, kernel)
+    return sharpened_image
 
 def preprocessing_object_detection():
-    # Features = []
-    # label = []
-    df = pd.read_csv("Datasets/annotations.csv", converters={'geometry': f})
-
-    # Create bounds, width, and height
-    df['bounds'] = df['geometry'].apply(getBounds)
-    df['width'] = df['bounds'].apply(getWidth)
-    df['height'] = df['bounds'].apply(getHeight)
-
-    image_files = glob('Datasets/images/*.*')
     Features = []
-    labels = []
-    cnt = 0
+    label = []
+    df = pd.read_csv("Datasets/annotations.csv",
+                     converters={'geometry': f})
+    # Create bounds, width and height
+    df.loc[:, 'bounds'] = df.loc[:, 'geometry'].apply(getBounds)
+    df.loc[:, 'width'] = df.loc[:, 'bounds'].apply(getWidth)
+    df.loc[:, 'height'] = df.loc[:, 'bounds'].apply(getHeight)
+
+    image_files = glob('Datasets/ALlimages/*.*')
+    unique, counts = np.unique(df['class'], return_counts=True)
+    cnt = 1
     for image in image_files:
         filename = os.path.basename(image)
         all_indexes = np.where(df['image_id'] == filename)[0]
         img = cv2.imread(image)
+        ### Image Enhancement
         image = img
-
         for ind in all_indexes:
-            img = image.copy()
-            labels.append(df['class'][ind])
-
+            print("Preprocessing : "+str(cnt))
+            img=image.copy()
+            label.append(df['class'][ind])
             coordinates = df['bounds'][ind]
             xB = coordinates[2]
             xA = coordinates[0]
             yB = coordinates[3]
             yA = coordinates[1]
-            cv2.rectangle(img, (xA, yA), (xB, yB), (0, 0, 0), 10)
+            cv2.rectangle(img, (xA, yA), (xB, yB), (0, 0, 0), 0)
             img = img[yA:yB, xA:xB]
-            filename = 'sgmntdobjcts\\imgg__' + str(cnt) + '.jpg'
+            getSharpen = sharpen(img)
+            dst = cv2.fastNlMeansDenoisingColored(getSharpen, None, 5, 5, 7, 21)
+            resized = cv2.resize(dst, (224, 224), interpolation=cv2.INTER_AREA)
+            filename = 'Detected Objects\\img__' + str(cnt) + '.jpg'
+            cv2.imwrite(filename, resized)
             cnt += 1
-            cv2.imwrite(filename, img)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Convert images to Grayscale
-            resized = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)  # Resize image to (224, 224)
+            # Resize image to (224, 224)
             Features.append(resized)  # append to list
-        cv2.waitKey(0)
+    feat=np.asarray(Features)  # convert to numpy array
+    lab = np.asarray(label)
+    np.save("Features/Images.npy",feat)
+    np.save("Features/Labels.npy",lab)
 
-    cv2.destroyAllWindows()
-
-    feat = np.asarray(Features)
-    lab = np.asarray(labels)
-
-    np.save("Features/Images1.npy", feat)
-    np.save("Features/labels.1npy", lab)
-
-# Call the preprocessing function
 # preprocessing_object_detection()
 
-
-import matplotlib.pyplot as plt
-
-
 def preprocessing_feature_extraction():
-    images = np.load("Features/Images1.npy")
+    images = np.load("Features/Images.npy")
+    images = images[:, :, :, 0]
     all_outputs = []
     cntt=0
-    for i in range(0, len(images), 5):
-        output = WNet_train(images[i:i + 5])
+    batch_size = 50
+    for i in range(0, len(images), batch_size):
+        print("\033[93mSegmentation\033[0m : " + str(cntt))
+        end_index = min(i + batch_size, len(images))
+        output = WNet_train(images[i:end_index])
+        cntt +=1
         for k in output:
-            filename = 'WNetoutputimages\\wimgg__' + str(cntt) + '.jpg'
-            cntt += 1
-            cv2.imwrite(filename, k)
+            all_outputs.append(k)
             plt.imshow(k)
-            plt.axis('off')  # Hide axis
-            plt.show()
-    #         all_outputs.append(k)
-    # all_outputss = np.asarray(all_outputs)
-    # np.save("segmentatione.npy", all_outputs)
+    all_outputss = np.asarray(all_outputs)
+    np.save("segmentatione.npy", all_outputs)
+# preprocessing_feature_extraction()
 
-        # all_outputs.append(output)
+def entropy(glcm):
+    entropy1 = -np.sum(glcm * np.log2(glcm + (glcm == 0)))
+    return entropy1
+# //////////shape and Structural Feauture Extrcation
 
+def ldp_process(photo):
+    def assign_bit(picture, x, y, c1, c2, d):  # assign bit according to degree and neighbouring pixel
+        # a and b are 1 if increasing and 0 if decreasing
+        if d == 0:
+            a = 0
+            b = 0
+            try:
+                if picture[c1][c2 + 1] >= picture[c1][c2]:
+                    a = 1
+                if picture[x][y + 1] >= picture[x][y]:
+                    b = 1
+            except:
+                pass
+        if d == 45:
+            a = 0
+            b = 0
+            try:
+                if picture[c1 - 1][c2 + 1] >= picture[c1][c2]:
+                    a = 1
+                if picture[x - 1][y + 1] >= picture[x][y]:
+                    b = 1
+            except:
+                pass
+        if d == 90:
+            a = 0
+            b = 0
+            try:
+                if picture[c1 - 1][c2] >= picture[c1][c2]:
+                    a = 1
+                if picture[x - 1][y] >= picture[x][y]:
+                    b = 1
+            except:
+                pass
+        if d == 135:
+            a = 0
+            b = 0
+            try:
+                if picture[c1 - 1][c2 - 1] >= picture[c1][c2]:
+                    a = 1
+                if picture[x - 1][y - 1] >= picture[x][y]:
+                    b = 1
+            except:
+                pass
+        if a == b:  # if monotonically increasing or decreasing than 0
+            return "0"
+        else:  # if turning point
+            return "1"
 
+        return bit
 
-    # Display all the outputs without saving to a numpy array
-    # for output in all_outputs:
+    def local_der_val(picture, x, y):  # calculating local derivative pattern value of a pixel
+        thirtytwo_bit_binary = []
+        centre = picture[x][y]
+        c1 = x
+        c2 = y
+        decimal_val = 0
+        # starting from top left,assigning bit to pixels clockwise at 0 degree
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y - 1, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y + 1, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y + 1, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y + 1, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y - 1, c1, c2, 0))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y - 1, c1, c2, 0))
 
-    # all_outputs = np.asarray(all_outputs)
-    # np.save("segmentation.npy", all_outputs)
-    # # Load the saved numpy array and display it
-    # loaded_outputs = np.load("segmentation.npy")
-    # plt.imshow(loaded_outputs[0])  # Assuming the output is the first image in the array
-    # plt.axis('off')  # Hide axis
-    # plt.show()
-preprocessing_feature_extraction()
+        # starting from top left,assigning bit to pixels clockwise at 45 degree
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y - 1, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y + 1, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y + 1, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y + 1, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y - 1, c1, c2, 45))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y - 1, c1, c2, 45))
 
+        # starting from top left,assigning bit to pixels clockwise at 90 degree
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y - 1, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y + 1, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y + 1, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y + 1, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y - 1, c1, c2, 90))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y - 1, c1, c2, 90))
 
-#GLCM FEatures
-def texture_extract(img):
-    distance = [1]
-    angles = [0, np.pi/4, np.pi/2, 3*np.pi/4]
-    properties = ['correlation', 'homogeneity', 'contrast', 'energy', 'dissimilarity']
+        # starting from top left,assigning bit to pixels clockwise at 135 degree
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y - 1, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x - 1, y + 1, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y + 1, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y + 1, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x + 1, y - 1, c1, c2, 135))
+        thirtytwo_bit_binary.append(assign_bit(picture, x, y - 1, c1, c2, 135))
 
-    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray_img, (5,5), 0)
+        str1 = ""
+        l = str1.join(thirtytwo_bit_binary)  # 32 bit binary number
+        decimal_val = int(l, 2)  # 32 bit binary to decimal number
+        return decimal_val
 
-    texture_features = []
-    for i in range(0, blur.shape[0], 4):
-        for j in range(0, blur.shape[1], 4):
-            block = blur[i:i+4, j:j+4]
+    m, n, _ = photo.shape
+    # m, n, = photo.shape
+    photo = cv2.cvtColor(photo, cv2.COLOR_BGR2GRAY)  # converting image to grayscale
+    ldp_photo = np.zeros((m, n))
+    # converting image to ldp
+    for i in range(0, m):
+        for j in range(0, n):
+            ldp_photo[i, j] = local_der_val(photo, i, j)
 
-            glcm_mat = graycomatrix(block, distances=distance, angles=angles, symmetric=True, normed=True)
-            block_glcm = np.hstack([graycoprops(glcm_mat, props).ravel() for props in properties])
-            texture_features.append(block_glcm)
+    return ldp_photo
+#canny shape
+def edge_detection(img):
+    a = (img * 255).astype("uint8")
+    edges = cv2.Canny(a, 100, 200)  # Add threshold2 value (e.g., 200)
+    return edges
+def shape_structure_feautures(img):
+    canny = edge_detection(img)
+    ldp = ldp_process(img)
+    combined_image = ldp + canny
 
-    return np.concatenate(texture_features)
+    return combined_image
 
-image_files = glob('WNetoutputimages/*.*')
-
-for filename in image_files:
-    img = cv2.imread(filename)
-    plt.imshow(img)
-    plt.axis('off')
-    plt.show()
-
-#/////REsnEt 101
-from glob import glob
-
-import cv2
-import numpy as np
-from matplotlib import pyplot as plt
-from tensorflow.keras.applications import ResNet101
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dropout, Flatten, BatchNormalization, Dense, Activation
-
-
-def create_resnet_model(input_shape=(224, 224, 3), num_classes=4):
-    base_model = ResNet101(include_top=False, weights='imagenet', input_shape=input_shape)
-
+def main_resnet_feat_ext(base_model):
     x = base_model.output
-    x = Dropout(0.5)(x)
+    x = Dropout(0.05)(x)
     x = Flatten()(x)
     x = BatchNormalization()(x)
     x = Dense(1024, kernel_initializer='he_uniform')(x)
     x = BatchNormalization()(x)
     x = Activation('relu')(x)
-    x = Dropout(0.5)(x)
+    x = Dropout(0.05)(x)
     x = Dense(1024, kernel_initializer='he_uniform')(x)
     x = BatchNormalization()(x)
     x = Activation('relu')(x)
-    x = Dropout(0.5)(x)
+    x = Dropout(0.05)(x)
     x = Dense(1024, kernel_initializer='he_uniform')(x)
     x = BatchNormalization()(x)
     x = Activation('relu')(x)
-    x = Dropout(0.5)(x)
+    x = Dropout(0.05)(x)
+    predictions = Dense(100, activation='softmax')(x)
+    model_feat = Model(inputs=base_model.input, outputs=predictions)
+    return model_feat
+def feat_resnet(array, input_shape):
+    base_model = ResNet101(include_top=False, weights='imagenet', input_shape=input_shape)
+    Model_feat = main_resnet_feat_ext(base_model)
+    feat = Model_feat.predict(array)
+    return feat
+def Resnet101_Feature_Extraction(image1):
+    """Residual Network (ResNet) is a deep learning model used for computer vision applications.
+    It is a Convolutional Neural Network (CNN) architecture designed to support hundreds or thousands of convolutional layers
+    Every layer of a ResNet is composed of several blocks. This is because when ResNets go deeper,
+    they normally do it by increasing the number of operations within a block,
+    but the number of total layers remains the same.ResNet-101 is a convolutional neural network that is 101 layers deep.
+    You can load a pretrained version of the network trained on more than a million images from the ImageNet database.
+    he pretrained network can classify images into 1000 object categories"""
+    input_shape = (image1.shape[1], image1.shape[2], image1.shape[3])
+    resnet_feat = feat_resnet(image1,input_shape)  # resnet feature extraction
+    return resnet_feat
 
-    predictions = Dense(num_classes, activation='softmax')(x)
+#LTP PAttern
+def get_pixel_of_mltp_left(image, center, x, y):
+    new_value = 0
+    try:
+        if image[x][y] < center:
+            new_value = 1 #-1
+        elif image[x][y] == center:
+            new_value = 0 # 0
+        elif image[x][y] > center:
+            new_value = 0  #1
+    except:
+        pass
+    return new_value
 
-    model = Model(inputs=base_model.input, outputs=predictions)
+def get_pixel_of_mltp_right(image, center, x, y):
+    new_value = 0
+    try:
+        if image[x][y] < center:
+            new_value = 0  #-1
+        elif image[x][y] == center:
+            new_value = 0 # 0
+        elif image[x][y] > center:
+            new_value = 1  #1
+    except:
+        pass
+    return new_value
 
+def calculated_pixel_of_mltp_right(image, x, y):
+    val_ar = []
+    center = image[x][y]
+    # top_left
+    val_ar.append(get_pixel_of_mltp_right(image, center, x - 1, y - 1))
+    # top
+    val_ar.append(get_pixel_of_mltp_right(image, center, x - 1, y))
+    # top_right
+    val_ar.append(get_pixel_of_mltp_right(image, center, x - 1, y + 1))
+    # right
+    val_ar.append(get_pixel_of_mltp_right(image, center, x, y + 1))
+    # bottom_right
+    val_ar.append(get_pixel_of_mltp_right(image, center, x + 1, y + 1))
+    # bottom
+    val_ar.append(get_pixel_of_mltp_right(image, center, x + 1, y))
+    # bottom_left
+    val_ar.append(get_pixel_of_mltp_right(image, center, x + 1, y - 1))
+    # left
+    val_ar.append(get_pixel_of_mltp_right(image, center, x, y - 1))
+    # Now, we need to convert binary values to decimal
+    power_val = [1, 2, 4, 8, 16, 32, 64, 128]
+    val = 0
+    for i in range(len(val_ar)):
+        val += val_ar[i] * power_val[i]
+    return val
+
+def calculated_pixel_of_mltp_left(image, x, y):
+    val_ar = []
+    center = image[x][y]
+    # top_left
+    val_ar.append(get_pixel_of_mltp_left(image, center, x - 1, y - 1))
+    # top
+    val_ar.append(get_pixel_of_mltp_left(image, center, x - 1, y))
+    # top_right
+    val_ar.append(get_pixel_of_mltp_left(image, center, x - 1, y + 1))
+    # right
+    val_ar.append(get_pixel_of_mltp_left(image, center, x, y + 1))
+    # bottom_right
+    val_ar.append(get_pixel_of_mltp_left(image, center, x + 1, y + 1))
+    # bottom
+    val_ar.append(get_pixel_of_mltp_left(image, center, x + 1, y))
+    # bottom_left
+    val_ar.append(get_pixel_of_mltp_left(image, center, x + 1, y - 1))
+    # left
+    val_ar.append(get_pixel_of_mltp_left(image, center, x, y - 1))
+    # Now, we need to convert binary values to decimal
+    power_val = [1, 2, 4, 8, 16, 32, 64, 128]
+    val = 0
+    for i in range(len(val_ar)):
+        val += val_ar[i] * power_val[i]
+    return val
+#LTP PAttern
+def Modified_ternary_texture(img):
+    img = cv2. cvtColor(img, cv2.COLOR_BGR2GRAY)
+    height, width = img.shape[0], img.shape[1]
+    mltp_right = np.zeros((height, width), np.uint8)
+    mltp_left = np.zeros((height, width), np.uint8)
+    for i in range(0, height):
+        for j in range(0, width):
+            mltp_right[i, j] = calculated_pixel_of_mltp_right(img, i, j)
+    for i in range(0, height):
+        for j in range(0, width):
+            mltp_left[i, j] = calculated_pixel_of_mltp_left(img, i, j)
+    img_ltp = cv2.addWeighted(mltp_right, 0.5, mltp_left, 0.5, 0)
+    return img_ltp
+
+#GLCM Features
+
+def GLCM_Feature_Extraction(img):
+    rgbImg = img
+    grayImg = img_as_ubyte(color.rgb2gray(rgbImg))
+    distances = [1, 2, 3]
+    angles = [0, np.pi / 4, np.pi / 2, 3 * np.pi / 4]
+    glcm = graycomatrix(grayImg, distances=distances, angles=angles, symmetric=True, normed=True)
+    dis = (graycoprops(glcm, 'dissimilarity'))
+    dis = np.mean(dis)
+    eng = (graycoprops(glcm, 'energy'))
+    eng = np.mean(eng)
+    hom = (graycoprops(glcm, 'homogeneity'))
+    hom = np.mean(hom)
+    cor = (graycoprops(glcm, 'correlation'))
+    cor = np.mean(cor)
+    con = (graycoprops(glcm, 'contrast'))
+    con = np.mean(con)
+    en = entropy(glcm)
+    feat = np.hstack((dis, eng, hom, cor, con, en))
+    return feat
+
+
+
+
+def Feature_Extraction():
+    images = np.load("segmentatione.npy")
+    features = []
+    reimg = []
+
+    cnt = 0
+    for i in range(len(images)):
+        print(colored("Feature Extraction :  >> "+ str(cnt), color='blue'))
+        img = cv2.resize(images[i], (32, 32))
+        im1 = Modified_ternary_texture(img)
+        im3 = GLCM_Feature_Extraction(img)
+        im4 = shape_structure_feautures(img)
+        im4 = im4.reshape(1, im4.shape[0] * im4.shape[1])
+        im1 = im1.reshape(1, im1.shape[0] * im1.shape[1])
+        im3 = im3.reshape(1, im3.shape[0])
+        im = np.hstack((im1,im3, im4))  # Concatenate all features
+        im4 = img.reshape(1,img.shape[0],img.shape[1],img.shape[2])
+        features.append(im)
+        reimg.append(im4)
+        cnt+=1
+
+    feat1 = np.vstack(features)
+    arra = np.vstack(reimg)
+    feat2 = Resnet101_Feature_Extraction(arra)
+    final_features = np.hstack((feat1, feat2))
+    np.save("Features/final_features.npy", final_features)
+
+from sklearn.preprocessing import LabelEncoder
+
+
+# Define your CNN model
+def get_model(X_Train,y_Train):
+    model = keras.Sequential()
+    model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', padding="same",input_shape=X_Train.shape[1:]))
+    model.add(MaxPooling2D(pool_size=(1,1)))
+    model.add(BatchNormalization())
+
+    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding="same"))
+    model.add(MaxPooling2D(pool_size=(1,1)))
+    model.add(BatchNormalization())
+
+    model.add(Conv2D(96, kernel_size=(3, 3), activation='relu', padding="same"))
+    model.add(MaxPooling2D(pool_size=(1,1)))
+    model.add(BatchNormalization())
+
+    model.add(Conv2D(96, kernel_size=(3, 3), activation='relu', padding="same"))
+    model.add(MaxPooling2D(pool_size=(1,1)))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.2))
+
+    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding="same"))
+    model.add(MaxPooling2D(pool_size=(1,1)))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.2))
+
+    model.add(Flatten())
+    model.add(Dense(256, activation='relu'))
+    model.add(Dropout(0.2))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dropout(0.3))
+    model.add(Dense(2, activation='softmax'))
+
+    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    print('Model prepared...')
     return model
 
 
-# Create the model
-model = create_resnet_model()
-model.summary()
+def calculate_metrics(true_labels, predicted_labels):
+    confusion_mtx = confusion_matrix(true_labels, predicted_labels)
+    cm = np.sum(confusion_mtx, axis=0)
 
-image_files = glob('WNetoutputimages/*.*')
-all_predictions = []
+    # Extract values from confusion matrix
+    TP = cm[0, 0]
+    TN = cm[1, 1]
+    FP = cm[0, 1]
+    FN = cm[1, 0]
 
-# Load and process each image file
-for image_path in image_files:
-    img = cv2.imread(image_path)  # Read the image using OpenCV
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB (OpenCV reads images in BGR format)
-    img = cv2.resize(img, (224, 224))  # Resize the image to match the model input shape
-    img = np.expand_dims(img, axis=0)  # Add batch dimension
+    # Calculate accuracy using confusion matrix
+    accuracy = (TP + TN) / np.sum(cm)
 
-    # Predict using the model
-    predictions = model.predict(img)
-    all_predictions.append(predictions)
+    # Calculate precision
+    precision = TP / (TP + FP)
 
+    # Calculate recall
+    recall = TP / (TP + FN)
 
+    # Calculate F1-score
+    f1_score = (2 * precision * recall) / (precision + recall)
 
-    # Display the image and predictions
-    plt.imshow(img[0])  # Display the image
+    # Calculate specificity
+    specificity = TN / (TN + FP)
 
-    plt.axis('off')  # Hide axis
-    plt.show()
+    return accuracy, precision, recall, f1_score, specificity
 
-np.save("predictions.npy", all_predictions)
+from imblearn.over_sampling import RandomOverSampler
+def oversample(X_train, y_train):
+    ros = RandomOverSampler(random_state=42)
+    X_resampled, y_resampled = ros.fit_resample(X_train, y_train)
+    return X_resampled, y_resampled
+def Analysis():
+    features = np.load("Final Featres/final_features.npy")
+    labels = np.load("Final Featres/Labels.npy")
+    le = LabelEncoder()
+    num_labels = le.fit_transform(labels)
+    label_categorical = to_categorical(num_labels)
+    X_train_resampled, y_train_resampled = oversample(features, label_categorical)
+    X_train_resampled = X_train_resampled.reshape(X_train_resampled.shape[0],X_train_resampled.shape[1] //2,2,1)
+    y_label_categorica = to_categorical(y_train_resampled)
+    models = get_model(X_train_resampled,y_label_categorica)
 
+    history = models.fit(X_train_resampled, y_label_categorica, batch_size=32, epochs=1, validation_split=0.2)
+    Y_pred = models.predict(X_train_resampled)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    # y_pred_categorica = to_categorical(Y_pred)
+    y_true = np.argmax(y_label_categorica, axis=1)
+    accuracy, precision, recall, f1_score, specificity = calculate_metrics(y_true, Y_pred)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1-score:", f1_score)
+    print("Specificity:", specificity)
 
-#///////Canny extraction
+    return Y_pred
 
-
-import cv2
-from glob import glob
-from matplotlib import pyplot as plt
-
-def edge_detection(image_path):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    assert img is not None, f"File {image_path} could not be read"
-
-    edges = cv2.Canny(img, 100, 200)  # Add threshold2 value (e.g., 200)
-
-    plt.subplot(121), plt.imshow(img, cmap='gray')
-    plt.title('Original Image'), plt.xticks([]), plt.yticks([])
-    plt.subplot(122), plt.imshow(edges, cmap='gray')
-    plt.title('Edge Image'), plt.xticks([]), plt.yticks([])
-
-    plt.show()
-
-    return edges
-
-
-def process_edge_detection(image_folder):
-    image_files = glob(image_folder)
-    cnt = 0
-    for image_path in image_files:
-        edge_image = edge_detection(image_path)
-        filename = 'shapedobjects\\imgg__' + str(cnt) + '.jpg'
-        cv2.imwrite(filename, edge_image)
-        cnt += 1
-
-
-process_edge_detection('sgmntdobjcts/*.*')
-
-#////LDP Pattern
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-from glob import glob
-
-def calculate_ldp(image_path):
-    I = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    assert I is not None, f"File {image_path} could not be read"
-
-    m, n = I.shape
-    z = np.zeros(8)
-    b = np.zeros((m, n))
-
-    msk = np.array([
-        [[-3, -3, 5], [-3, 0, 5], [-3, -3, 5]],  # East
-        [[-3, 5, 5], [-3, 0, 5], [-3, -3, -3]],  # North-East
-        [[5, 5, 5], [-3, 0, -3], [-3, -3, -3]]  # North
-    ])
-
-    for i in range(1, m - 1):
-        for j in range(1, n - 1):
-            t = 0
-            for k in range(-1, 2):
-                for l in range(-1, 2):
-                    if k != 0 or l != 0:
-                        if t < 3:  # Ensure t is within the bounds of the third axis of msk
-                            z[t] = I[i + k, j + l] * msk[k + 1, l + 1, t]
-                            t += 1
-
-            q = np.argsort(z)
-            g = 4
-            z[q[:g]] = 0
-            z[q[g:]] = 1
-
-            for t in range(8):
-                b[i, j] += 2**t * z[t]
-
-    b = ((b - np.min(b)) * 255 / (np.max(b) - np.min(b))).astype(np.uint8)
-
-    return b
-
-
-def process_ldp_images(image_folder):
-    image_files = glob(image_folder)
-    cntt = 0
-    for idx in range(len(image_files)):
-        image_path = image_files[idx]
-        ldp_image = calculate_ldp(image_path)
-        plt.imshow(ldp_image, cmap='gray')
-        plt.axis('off')
-        plt.show()
-        filename = 'shapedobjects\\imgg__' + str(cntt) + '.jpg'
-        cv2.imwrite(filename, ldp_image)
-        cntt += 1
-        cv2.imwrite(filename, ldp_image)
-
-# Process LDP images in the "WNetoutputimages" folder
-process_ldp_images('WNetoutputimages/*.*')
-
-
+Analysis()
 
