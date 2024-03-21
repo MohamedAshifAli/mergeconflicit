@@ -1,11 +1,14 @@
+import math
 import os
 
 import keras
 import pandas as pd
 import smote
-from keras import Model
+from imblearn.over_sampling import RandomOverSampler
+from keras import Model, Sequential
 from keras.applications import ResNet101
-from keras.layers import BatchNormalization, Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D
+from keras.layers import BatchNormalization, Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D, LSTM, \
+    GlobalAveragePooling2D, MaxPool2D
 from keras.utils import to_categorical
 from matplotlib import image as mpimg
 from skimage import color
@@ -23,10 +26,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage.feature import graycomatrix, graycoprops
-from sklearn.metrics import multilabel_confusion_matrix, confusion_matrix
+from sklearn.metrics import multilabel_confusion_matrix
 from termcolor import colored
-
-# from ExplainbleCNN import model
 
 seed(1)
 import tensorflow
@@ -687,12 +688,226 @@ def Feature_Extraction():
     np.save("Features/final_features.npy", final_features)
 
 from sklearn.preprocessing import LabelEncoder
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation
+# from keras.layers.recurrent import LSTM
+# from tensorflow.keras.layers import LSTM
+from keras.models import load_model
+import keras
+import os
+from keras.layers import  Embedding, LSTM,Bidirectional,SimpleRNN,Conv1D
+from keras import metrics, regularizers
+from keras.optimizers import SGD,RMSprop, Adam, Adadelta, Adagrad ,Adamax, Nadam
+import seaborn as sns
+from keras.utils import np_utils
+def resize_features(features):
+    new_height = 224
+    new_width = 224
+    resized_features = []
+    for feature in features:
+        resized_image = cv2.resize(feature, (new_width, new_height))
+        var = np.zeros((new_height, new_width, 3))
+        var[:, :, 0] = resized_image
+        resized_features.append(var)
+    return np.array(resized_features)
+
+def split_data(features, labels,  train_size):
+    total_data = len(features)
+    indices = np.arange(total_data)
+    np.random.shuffle(indices)
+
+    split_index = int(total_data * (1 - train_size))
+    train_indices = indices[:split_index]
+    test_indices = indices[split_index:]
+
+    xtrain = features[train_indices]
+    xtest = features[test_indices]
+    ytrain = labels[train_indices]
+    ytest = labels[test_indices]
+
+    return xtrain, xtest, ytrain, ytest
+
+from keras import layers
+# def oversample(X_train, y_train):
+#     ros = RandomOverSampler(random_state=42)
+#     X_resampled, y_resampled = ros.fit_resample(X_train, y_train)
+#     return X_resampled, y_resampled
+
+from sklearn.preprocessing import MinMaxScaler
+# #COMPARITIVE MODEL -1def LSTM_Model(xtrain, ytrain,xtest, ytest,epochs):
+# def LSTM_Model(xtrain, ytrain, xtest, ytest):
+#
+#     model = Sequential()
+#     model.add(Conv2D(32, (3, 3), padding="same", activation="relu", input_shape=(None, 150, 150, 3)))
+#     # model.add(LSTM(32, return_sequences=True))
+#     model.add(MaxPool2D((2, 2), strides=2))
+#
+#     model.add(Conv2D(32, (3, 3), padding="same", activation="relu"))
+#     # model.add(LSTM(64, return_sequences=True))
+#     model.add(MaxPool2D((2, 2), strides=2))
+#
+#     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+#
+#     print('Model prepared...')
+#
+#     model.fit(xtrain, ytrain, batch_size=32, epochs=15, validation_split=0.2)
+#
+#     Y_pred = model.predict(xtest)
+#     Y_pred = np.argmax(Y_pred, axis=1)
+#     Y_true = np.argmax(ytest, axis=1)
+#
+#     return Y_pred, Y_true
+
+def LSTM_Model(xtrain, ytrain, xtest, ytest):
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2, 1)
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2, 1)
+
+    model = Sequential()
+    model.add(Conv2D(32, (3, 3), padding="same", activation="relu", input_shape = xtrain.shape[1:]))
+    model.add(MaxPooling2D((2, 2)))
+    # model.add(LSTM(32, return_sequences=True))
+    # model.add(LSTM(64, return_sequences=True))
+    # model.add(LSTM(128))
+    # model.add(Dropout(0.2))
+    # model.add(Flatten())
+    model.add(Dropout(0.5))
+    model.add(Dense(ytrain.shape[1], activation="softmax"))
+
+    model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+
+    print('Model prepared...')
+
+    model.fit(xtrain, ytrain, batch_size=32, epochs=10, validation_split=0.2)
+
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+
+    return Y_pred, Y_true
+
+
+def Bi_LSTM_MODEL(xtrain, ytrain, xtest, ytest):
+    epochs = 10
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2 ,1 )
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2 ,1)
+
+    model = Sequential()
+    model.add(Bidirectional(LSTM(128, activation='relu', return_sequences=False, input_shape = xtrain.shape[1:])))
+    model.add(Dropout(0.2))
+    model.add(Dense(ytrain.shape[1], activation='softmax'))
+
+    model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+
+    print('Model prepared...')
+
+    model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+
+    return Y_pred, Y_true
+
+
+def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest):
+    epochs = 5
+    xtrain = resize_features(xtrain)
+    xtest = resize_features(xtest)
+
+    base_layer = tensorflow.keras.applications.ResNet50(
+        include_top=False,
+        weights="imagenet",
+        input_tensor=None,
+        input_shape=(224, 224, 3),
+        pooling=None,
+    )
+
+    model = Sequential([
+        base_layer,
+        layers.Flatten(),
+        layers.Dense(32, activation="relu"),
+        layers.BatchNormalization(),
+        layers.Dense(ytrain.shape[1], activation="softmax") ])
+
+    model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+
+    print('Model prepared...')
+
+    model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+
+    return Y_pred, Y_true
+
+#//////////////Rnn
+
+#//RNN pending
+# def RNN(xtrain, ytrain,xtest, ytest,epochs):
+#     epochs = 10
+#     xtrain = xtrain.reshape(xtrain.shape[0], 28, 28)
+#     xtest = xtest.reshape(xtest.shape[0], 28, 28)
+#
+#     model = tf.keras.Sequential([
+#         tf.keras.Input(shape=(28, 28)),
+#         tf.keras.layers.GRU(128),
+#         tf.keras.layers.Dense(128, activation='relu', input_shape=(28, 28,)),
+#         tf.keras.layers.Dropout(0.2, input_shape=(128,)),
+#         tf.keras.layers.Dense(10, activation='softmax')
+#     ])
+#     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+#     print('Model prepared...')
+#     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+#     Y_pred = model.predict(xtest)
+#     Y_pred = np.argmax(Y_pred, axis=1)
+#     Y_true = np.argmax(ytest, axis=1)
+#
+#     return Y_pred, Y_true
+# #newCNN
+# def EfficientNetB3(xtrain, ytrain, xtest, ytest, epochs):
+#     y2train = ytrain.reshape(-1, 1)  # Reshape to (num_samples, 1)
+#
+#     y2train = to_categorical(ytrain)  # Convert to one-hot encoded format
+#       # Convert to one-hot encoded format
+#
+#     model_main = tf.keras.applications.efficientnet.EfficientNetB3(input_shape=(224, 224, 3), include_top=False,
+#                                                                    weights='imagenet')
+#     model_main.trainable = False
+#     model = tf.keras.Sequential([
+#         model_main,
+#         GlobalAveragePooling2D(name="avg_pool"),
+#         BatchNormalization(),
+#         Dropout(0.2, name="top_dropout"),
+#         Dense(256, activation='relu', activity_regularizer=tf.keras.regularizers.l2(1e-5)),
+#         Dropout(0.25),
+#         Dense(y2train.shape[1], activation="softmax")
+#     ])
+#
+#     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+#
+#     print('Model prepared...')
+#
+#     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+#
+#     Y_pred = model.predict(xtest)
+#     Y_pred = np.argmax(Y_pred, axis=1)
+#     Y_true = np.argmax(ytest, axis=1)
+#
+#     return Y_pred, Y_true
+#
+
 
 
 # Define your CNN model
-def get_model(X_Train,y_Train):
+def Hybrid_Attention_Based_Explainable_CNN(xtrain, ytrain,xtest, ytest,epochs):
+
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2, 1)
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2, 1)
+
+
     model = keras.Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', padding="same",input_shape=X_Train.shape[1:]))
+    model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', padding="same",input_shape = xtrain.shape[1:]))
     model.add(MaxPooling2D(pool_size=(1,1)))
     model.add(BatchNormalization())
 
@@ -719,69 +934,164 @@ def get_model(X_Train,y_Train):
     model.add(Dropout(0.2))
     model.add(Dense(128, activation='relu'))
     model.add(Dropout(0.3))
-    model.add(Dense(2, activation='softmax'))
+    model.add(Dense(ytrain.shape[1], activation='softmax')) ## No of classes
 
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
     print('Model prepared...')
-    return model
+    model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+    return Y_pred,Y_true
 
+from sklearn.metrics import confusion_matrix
 
-def calculate_metrics(true_labels, predicted_labels):
-    confusion_mtx = confusion_matrix(true_labels, predicted_labels)
-    cm = np.sum(confusion_mtx, axis=0)
+def main_est_perf_metrics(preds, y_test):
 
-    # Extract values from confusion matrix
-    TP = cm[0, 0]
-    TN = cm[1, 1]
-    FP = cm[0, 1]
-    FN = cm[1, 0]
+    confusion_mtx = confusion_matrix(y_test, preds)
+    #cm =sum(mcm)
+    """Total Counts of Confusion Matrix"""
+    total = sum(sum(confusion_mtx))
+    # """True Positive"""
+    TP = confusion_mtx[0, 0]
+    """False Positive"""
+    FP = confusion_mtx[0, 1]
+    """False Negative"""
+    FN = confusion_mtx[1, 0]
+    """True Negative"""
+    TN = confusion_mtx[1, 1]
+    """Accuracy Formula"""
+    acc = (TP + TN) / total
+    """Sensitivity Formula"""
+    sen = TP / (FN + TP)
+    """Specificity Formula"""
+    spe = TN / (FP + TN)
+    """Precision Formula"""
+    pre = TP / (TP + FP)
+    """Recall Formula"""
+    rec = TP / (FN + TP)
+    """F1 Score Formula"""
+    f1_score = (2 * pre * rec) / (pre + rec)
+    '''Critical Success Index '''
+    CSI = TP/(TP+FN+FP)
+    '''False Positivie Rate'''
+    FPR = FP / (FP + TN)  # 1 - Specificity
+    '''False Negative Rate'''
+    FNR = FN / (TP + FN)  # 1 - Sensitivity
+    '''Matthews Correlation Coefficient'''
+    MCC = (TP * TN - FP * FN) / np.sqrt((TP+FP)*(TP+FN)*(TN+FP)*(TN+FN))
+    '''Negative Predictive Value'''
+    NPV = TN / (TN + FN)  # negative predictive value
+    '''Positive Predictive Value'''
+    PPV = TP / (TP + FP)  # Positive Predictive Value
 
-    # Calculate accuracy using confusion matrix
-    accuracy = (TP + TN) / np.sum(cm)
+    # print("Accuracy:", ACC)
+    # print("Sensitivity:", SEN)
+    # print("Specificity:", SPE)
+    # print("Precision:", PRE1)
+    # print("Recall:", REC1)
+    # print("F1 Score:", FSC1)
+    # print("CSI:", CSI1)
+    # print("FPR:", FPR1)
+    # print("FNR:", FNR1)
+    # print("MCC:", MCC1)
+    # print("PPV:", PPV1)
+    # print("NPV:", NPV1)
 
-    # Calculate precision
-    precision = TP / (TP + FP)
+    return [acc, sen, spe, pre,rec,f1_score,CSI,FPR,FNR,MCC,PPV,NPV]
 
-    # Calculate recall
-    recall = TP / (TP + FN)
-
-    # Calculate F1-score
-    f1_score = (2 * precision * recall) / (precision + recall)
-
-    # Calculate specificity
-    specificity = TN / (TN + FP)
-
-    return accuracy, precision, recall, f1_score, specificity
-
-from imblearn.over_sampling import RandomOverSampler
 def oversample(X_train, y_train):
     ros = RandomOverSampler(random_state=42)
     X_resampled, y_resampled = ros.fit_resample(X_train, y_train)
     return X_resampled, y_resampled
-def Analysis():
+
+
+def Tp_Analysis():
     features = np.load("Final Featres/final_features.npy")
     labels = np.load("Final Featres/Labels.npy")
+
     le = LabelEncoder()
-    num_labels = le.fit_transform(labels)
-    label_categorical = to_categorical(num_labels)
-    X_train_resampled, y_train_resampled = oversample(features, label_categorical)
-    X_train_resampled = X_train_resampled.reshape(X_train_resampled.shape[0],X_train_resampled.shape[1] //2,2,1)
-    y_label_categorica = to_categorical(y_train_resampled)
-    models = get_model(X_train_resampled,y_label_categorica)
 
-    history = models.fit(X_train_resampled, y_label_categorica, batch_size=32, epochs=1, validation_split=0.2)
-    Y_pred = models.predict(X_train_resampled)
-    Y_pred = np.argmax(Y_pred, axis=1)
-    # y_pred_categorica = to_categorical(Y_pred)
-    y_true = np.argmax(y_label_categorica, axis=1)
-    accuracy, precision, recall, f1_score, specificity = calculate_metrics(y_true, Y_pred)
-    print("Accuracy:", accuracy)
-    print("Precision:", precision)
-    print("Recall:", recall)
-    print("F1-score:", f1_score)
-    print("Specificity:", specificity)
+    labels = le.fit_transform(labels)
 
-    return Y_pred
+    features, labels = oversample(features, labels)
 
-Analysis()
+    epochs = [2, 4, 6, 8, 10]  # No. of Iterations
+
+    tr = [0.4, 0.5, 0.6, 0.7, 0.8]  # Variation of Training Percentage - takes datasets rom smaller percentage to higher percentage to give the training percentage
+
+    options = [0, 1, 2, 3]
+    COM_A = []
+    COM_B = []
+    COM_C = []
+    COM_D = []
+    COM_E = []
+    COM_F = []
+    COM_G = []
+    COM_H = []
+    COM_I = []
+
+    for p in range(len(tr)):
+        print(  '\033[46m' + '\033[30m' + "Training Percentage and Testing Percentage : " + str(tr[p] * 100) + " and " + str(
+                100 - (tr[p] * 100)) + '\x1b[0m')
+
+        xtrain, xtest, ytrain, ytest = split_data(features, labels, train_size=tr[p])
+
+        y1train = to_categorical(ytrain)
+        y1test = to_categorical(ytest)
+
+        print('\033[46m' + '\033[30m' + "------------------------------MODEL TRAINING SECTION---------------------------------------"  + '\x1b[0m')
+        Y_pred1, Y_true1 = LSTM_Model(xtrain,y1train,xtest,y1test)
+        Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain,y1train,xtest,y1test)
+        Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain,y1train,xtest,y1test)
+        # Y_pred4, Y_true4 = RNN(xtrain,y1train,xtest,y1test)
+        Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain,y1train,xtest,y1test,epochs[0])
+        Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[1])
+        Y_pred7, Y_true7 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[2])
+        Y_pred8, Y_true8 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[3])
+        Y_pred9, Y_true9 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4])
+
+
+
+        print('\033[46m' + '\033[30m' + "________________________Metrics Evaluated from Confusion Matrix__________________________________" + '\x1b[0m')
+
+        [ACC1, SEN1, SPE1, PRE1, REC1, FSC1, CSI1, FPR1, FNR1, MCC1, PPV1, NPV1] = main_est_perf_metrics(Y_pred1,Y_true1)
+        [ACC2, SEN2, SPE2, PRE2, REC2, FSC2, CSI2, FPR2, FNR2, MCC2, PPV2, NPV2] = main_est_perf_metrics(Y_pred2, Y_true2)
+        [ACC3, SEN3, SPE3, PRE3, REC3, FSC3, CSI3, FPR3, FNR3, MCC3, PPV3, NPV3] = main_est_perf_metrics(Y_pred3, Y_true3)
+        # [ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4] = main_est_perf_metrics(Y_pred4, Y_true4 )
+        [ACC5, SEN5, SPE5, PRE5, REC5, FSC5, CSI5, FPR5, FNR5, MCC5, PPV5, NPV5] = main_est_perf_metrics(Y_pred5, Y_true5)
+        [ACC6, SEN6, SPE6, PRE6, REC6, FSC6, CSI6, FPR6, FNR6, MCC6, PPV6, NPV6] = main_est_perf_metrics(Y_pred6, Y_true6)
+        [ACC7, SEN7, SPE7, PRE7, REC7, FSC7, CSI7, FPR7, FNR7, MCC7, PPV7, NPV7] = main_est_perf_metrics(Y_pred7, Y_true7)
+        [ACC8, SEN8, SPE8, PRE8, REC8, FSC8, CSI8, FPR8, FNR8, MCC8, PPV8, NPV8] = main_est_perf_metrics(Y_pred8, Y_true8)
+        [ACC9, SEN9, SPE9, PRE9, REC9, FSC9, CSI9, FPR9, FNR9, MCC9, PPV9, NPV9] = main_est_perf_metrics(Y_pred9, Y_true9)
+
+        print('\033[46m' + '\033[30m' +"________________________Save Metrics__________________________________" + '\x1b[0m')
+
+        COM_A.append([ACC1, SEN1, SPE1, PRE1, REC1, FSC1, CSI1, FPR1, FNR1, MCC1, PPV1, NPV1])
+        COM_B.append([ACC2, SEN2, SPE2, PRE2, REC2, FSC2, CSI2, FPR2, FNR2, MCC2, PPV2, NPV2])
+        COM_C.append([ACC3, SEN3, SPE3, PRE3, REC3, FSC3, CSI3, FPR3, FNR3, MCC3, PPV3, NPV3])
+        # COM_D.append([ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4])
+        COM_E.append([ACC5, SEN5, SPE5, PRE5, REC5, FSC5, CSI5, FPR5, FNR5, MCC5, PPV5, NPV5])
+        COM_F.append([ACC6, SEN6, SPE6, PRE6, REC6, FSC6, CSI6, FPR6, FNR6, MCC6, PPV6, NPV6])
+        COM_G.append([ACC7, SEN7, SPE7, PRE7, REC7, FSC7, CSI7, FPR7, FNR7, MCC7, PPV7, NPV7])
+        COM_H.append([ACC8, SEN8, SPE8, PRE8, REC8, FSC8, CSI8, FPR8, FNR8, MCC8, PPV8, NPV8])
+        COM_I.append([ACC9, SEN9, SPE9, PRE9, REC9, FSC9, CSI9, FPR9, FNR9, MCC9, PPV9, NPV9])
+
+
+    np.save('NPY\\COM_A.npy'.format(os.getcwd()), COM_A)
+    np.save('NPY\\COM_B.npy'.format(os.getcwd()), COM_B)
+    np.save('NPY\\COM_C.npy'.format(os.getcwd()), COM_C)
+    # np.save('NPY\\COM_D.npy'.format(os.getcwd()), COM_D)
+    np.save('NPY\\COM_E.npy'.format(os.getcwd()), COM_E)
+    np.save('NPY\\COM_F.npy'.format(os.getcwd()), COM_F)
+    np.save('NPY\\COM_G.npy'.format(os.getcwd()), COM_G)
+    np.save('NPY\\COM_H.npy'.format(os.getcwd()), COM_H)
+    np.save('NPY\\COM_I.npy'.format(os.getcwd()), COM_I)
+
+Tp_Analysis()
+
+
+
+
+
 
