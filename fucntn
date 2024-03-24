@@ -1,34 +1,41 @@
-import math
-import os
-
+from sklearn.metrics import confusion_matrix
 import keras
 import pandas as pd
-import smote
 from imblearn.over_sampling import RandomOverSampler
 from keras import Model, Sequential
 from keras.applications import ResNet101
 from keras.layers import BatchNormalization, Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D, LSTM, \
-    GlobalAveragePooling2D, MaxPool2D
+    GlobalAveragePooling2D, MaxPool2D, multiply, Add, GlobalMaxPooling2D, Reshape,Lambda
 from keras.utils import to_categorical
-from matplotlib import image as mpimg
 from skimage import color
-from skimage.feature import graycoprops, graycomatrix
 from skimage.util import img_as_ubyte
-from glob import glob
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
+
 from numpy.random import seed
 import ast
 from glob import glob
 import cv2
 from PIL import Image
-import matplotlib.pyplot as plt
 import numpy as np
-from skimage.feature import graycomatrix, graycoprops
-from sklearn.metrics import multilabel_confusion_matrix
-from termcolor import colored
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import LabelEncoder
+from keras.models import Sequential
+import keras
+import os
+from keras.layers import  Embedding, LSTM,Bidirectional,SimpleRNN,Conv1D
+from keras import metrics, regularizers
+from keras.optimizers import SGD,RMSprop, Adam, Adadelta, Adagrad ,Adamax, Nadam
+import seaborn as sns
+from keras.utils import np_utils
+from keras import layers
+from keras import backend as K
 
+
+from mealpy.swarm_based.COA import BaseCOA as  COA
+from mealpy.swarm_based.GWO import  BaseGWO as GWO
+from mealpy.Prop import BaseProp as Prop
+from skimage.feature import graycomatrix, graycoprops
+from sklearn.metrics import multilabel_confusion_matrix, accuracy_score
+from termcolor import colored
 seed(1)
 import tensorflow
 tensorflow.random.set_seed(2)
@@ -40,11 +47,43 @@ import matplotlib.pyplot as plt
 import tensorflow.compat.v1 as tf
 import warnings
 warnings.filterwarnings('ignore',category= UserWarning)
-from tensorflow.keras.applications import ResNet101
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dropout, Flatten, BatchNormalization, Dense, Activation
+from keras.applications import ResNet101
+from keras.models import Model
+from keras.layers import Dropout, Flatten, BatchNormalization, Dense, Activation
+from pytorch_grad_cam import (GradCAMPlusPlus, FullGrad)
+from pytorch_grad_cam import GuidedBackpropReLUModel
+from pytorch_grad_cam.utils.image import (show_cam_on_image, deprocess_image, preprocess_image)
+from torchvision import models
+resnet50_model = models.resnet50(pretrained=True)
+#
 
-tf.disable_v2_behavior()
+def Guided_Propagation_Model(rgb_img, CAM_Model=None):
+    target_layers = [resnet50_model.layer4] ## Base Model
+    rgb_img = rgb_img[:, :, ::-1]
+    rgb_img = np.float32(rgb_img) / 255
+    input_tensor = preprocess_image(rgb_img,
+                                    mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225])
+    targets = None
+    cam_algorithm = CAM_Model ## CAM Algorithm
+    with cam_algorithm(model=resnet50_model,
+                       target_layers=target_layers
+                       ) as cam:
+        cam.batch_size = 32
+        grayscale_cam = cam(input_tensor=input_tensor,
+                            targets=targets,
+                            aug_smooth=False,
+                            eigen_smooth=False)
+
+        grayscale_cam = grayscale_cam[0, :]
+        # , use_cuda = False
+        cam_image = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
+        cam_image = cv2.cvtColor(cam_image, cv2.COLOR_RGB2BGR)
+    gb_model = GuidedBackpropReLUModel(model=resnet50_model, use_cuda=False)
+    gb = gb_model(input_tensor, target_category=None)
+    cam_mask = cv2.merge([grayscale_cam, grayscale_cam, grayscale_cam]) ## Merge all Outputs
+    cam_gb = deprocess_image(cam_mask * gb)
+    return cam_gb
 
 def f(x):
     return ast.literal_eval(x.rstrip('\r\n')) #convrt the annotations strings into their original data types integr for the usage in nprogram
@@ -126,8 +165,27 @@ def calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_
 
     return num_outputs - num_sum
 
-
-def WNet_train(X_train):
+def Hybrid_Attention_Module_Segmentation(x):
+    # Get Weights from previous layers
+    all_x = x.node.layer.trainable_weights
+    ## From all weights select zero th layer weights
+    sel_x = all_x[0]
+    w = np.array(sel_x)
+    x = tf.convert_to_tensor(x)
+    ## fed selected weights into Triplet attention Module
+    weights = HybridAttention(x).forward()
+    # Reshape according to old weight
+    weights = weights.reshape(w.shape[0], w.shape[1],w.shape[2],w.shape[3])
+    ## Convert it into tensor
+    weights = tf.convert_to_tensor(weights)
+    ## replace old weight by Triplet module generated weights
+    all_x[0] = weights
+    ## updated all weights in x
+    x.node.layer.trainable_weights_ = all_x
+    return x
+def Hybrid_WNet_train(X_train):
+    tf.disable_v2_behavior()
+    # tf.compat.v1.disable_eager_execution()
     X_train = X_train.astype('float32') / 255.  # Standardizing the data
     X_train = np.reshape(X_train, (len(X_train), 224, 224, 1))  # reshape it to (1140, 224, 224, 1) for feeding to model
 
@@ -140,13 +198,14 @@ def WNet_train(X_train):
     r = 5
     sigma_dist = 4
     sigma_pixel = tf.square(tf.constant(10.0))
-    input_img = tf.placeholder(dtype=tf.float32, shape=[None, height, width, channels], name='input_tensor')
+    input_img = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, height, width, channels], name='input_tensor')
     variance_epsilon = 0.0001
     with tf.name_scope('Encoder'):
+
         conv_1_1 = tf.layers.conv2d(input_img, 64, 3, padding='same', activation='relu')
-        mean, variance = tf.nn.moments(conv_1_1, [0, 1, 2])
-        # conv_1_1_bn = Batch_Normalization(conv_1_1, mean, variance, None, None, variance_epsilon)
-        conv_1_1_bn = BatchNormalization(epsilon=variance_epsilon)(conv_1_1)
+        conv_1_1_with_attention = Hybrid_Attention_Module_Segmentation(conv_1_1)
+        mean, variance = tf.nn.moments(conv_1_1_with_attention, [0, 1, 2])
+        conv_1_1_bn = tf.nn.batch_normalization(conv_1_1, mean, variance, None, None, variance_epsilon)
 
         conv_1_1_drop = tf.layers.dropout(conv_1_1_bn, keep_prob)
         conv_1_2 = tf.layers.conv2d(conv_1_1_drop, 64, 3, padding='same', activation='relu')
@@ -201,7 +260,6 @@ def WNet_train(X_train):
         mean, variance = tf.nn.moments(conv_5_2, [0, 1, 2])
         conv_5_2_bn = tf.nn.batch_normalization(conv_5_2, mean, variance, None, None, variance_epsilon)
         conv_5_2_drop = tf.layers.dropout(conv_5_2_bn, keep_prob)
-
         upconv_1 = upconv_concat(conv_5_2_drop, conv_4_2_drop, n_filter=512, k_size=2, stride=2)
 
         conv_6_1 = tf.layers.separable_conv2d(upconv_1, 512, 3, padding='same', activation='relu')
@@ -254,47 +312,47 @@ def WNet_train(X_train):
         print(conv.shape, "conv")
         encoder_output = tf.nn.softmax(conv, axis=3, name="output_tensor")
 
-    init = tf.global_variables_initializer()
+        init = tf.global_variables_initializer()
 
-    s = 2 * r + 1
-    spatial_kernel = np.zeros((s, s), dtype=np.float32)
-    for y in range(s):
-        for x in range(s):
-            # calculate squared euclidean distance
-            dist = (x - r) * (x - r) + (y - r) * (y - r)
-            if dist < (r * r):
-                spatial_kernel[y][x] = np.exp((-dist) / sigma_dist)
+        s = 2 * r + 1
+        spatial_kernel = np.zeros((s, s), dtype=np.float32)
+        for y in range(s):
+            for x in range(s):
+                # calculate squared euclidean distance
+                dist = (x - r) * (x - r) + (y - r) * (y - r)
+                if dist < (r * r):
+                    spatial_kernel[y][x] = np.exp((-dist) / sigma_dist)
 
-    spatial_kernel = tf.constant(spatial_kernel.reshape(-1), dtype=tf.float32)
+        spatial_kernel = tf.constant(spatial_kernel.reshape(-1), dtype=tf.float32)
 
-    # create one dimensional kernel
+        # create one dimensional kernel
 
-    s = 2 * r + 1
-    one_dim_kernel = np.zeros((s, s, (s * s)))
-    for i in range(s * s):
-        one_dim_kernel[int(i / s)][i % s][i] = 1.0
-    one_dim_kernel = one_dim_kernel.reshape(s, s, 1, (s * s))
-    one_dim_kernel = tf.constant(one_dim_kernel, dtype=tf.float32)
+        s = 2 * r + 1
+        one_dim_kernel = np.zeros((s, s, (s * s)))
+        for i in range(s * s):
+            one_dim_kernel[int(i / s)][i % s][i] = 1.0
+        one_dim_kernel = one_dim_kernel.reshape(s, s, 1, (s * s))
+        one_dim_kernel = tf.constant(one_dim_kernel, dtype=tf.float32)
 
-    loss = calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_kernel, batch_size)
-    soft_cut_norm_loss = tf.reduce_mean(loss)
-    with tf.name_scope("optimizer"):
-        norm_cut_opt = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(soft_cut_norm_loss)  # optimizer
+        loss = calc_loss(num_outputs, encoder_output, one_dim_kernel, sigma_pixel, spatial_kernel, batch_size)
+        soft_cut_norm_loss = tf.reduce_mean(loss)
+        with tf.name_scope("optimizer"):
+            norm_cut_opt = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(soft_cut_norm_loss)  # optimizer
 
-    init = tf.global_variables_initializer()
+        init = tf.global_variables_initializer()
 
-    with tf.Session() as sess:
-        sess.run(init)
+        with tf.Session() as sess:
+            sess.run(init)
         for epoch in range(num_epochs):
             print("epoch:", epoch)
-            count = 0
-            batch_start_index = 0
-            while (count != 1):
-                X_train_batch = X_train[batch_start_index: batch_start_index + batch_size]
-                _, train_loss = sess.run([norm_cut_opt, soft_cut_norm_loss],
-                                         feed_dict={input_img: X_train_batch, keep_prob: 0.7})
-                batch_start_index += batch_size
-                count += 1
+        count = 0
+        batch_start_index = 0
+        while (count != 1):
+            X_train_batch = X_train[batch_start_index: batch_start_index + batch_size]
+            _, train_loss = sess.run([norm_cut_opt, soft_cut_norm_loss],
+                                     feed_dict={input_img: X_train_batch, keep_prob: 0.7})
+            batch_start_index += batch_size
+            count += 1
             print("Train loss after epoch ", str(epoch), "is", str(train_loss))
         #     saved_path = saver.save(sess, './my-model')
         output_graph_def = tf.graph_util.convert_variables_to_constants(sess, sess.graph.as_graph_def(),
@@ -307,6 +365,7 @@ def WNet_train(X_train):
         #     saver.restore(sess, './my-model')
         output = sess.run(encoder_output, feed_dict={input_img: X_train})
     return output
+
 
 def sharpen(img):
 
@@ -352,30 +411,29 @@ def preprocessing_object_detection():
             cnt += 1
             # Resize image to (224, 224)
             Features.append(resized)  # append to list
-    feat=np.asarray(Features)  # convert to numpy array
+    feat = np.asarray(Features)  # convert to numpy array
     lab = np.asarray(label)
     np.save("Features/Images.npy",feat)
     np.save("Features/Labels.npy",lab)
 
-# preprocessing_object_detection()
 
-def preprocessing_feature_extraction():
+def Segmentation():
     images = np.load("Features/Images.npy")
-    images = images[:, :, :, 0]
+    # images = images[:, :, :, 0]
     all_outputs = []
     cntt=0
     batch_size = 50
     for i in range(0, len(images), batch_size):
         print("\033[93mSegmentation\033[0m : " + str(cntt))
         end_index = min(i + batch_size, len(images))
-        output = WNet_train(images[i:end_index])
+        output =Hybrid_WNet_train(images[i:end_index])
         cntt +=1
         for k in output:
             all_outputs.append(k)
             plt.imshow(k)
     all_outputss = np.asarray(all_outputs)
     np.save("segmentatione.npy", all_outputs)
-# preprocessing_feature_extraction()
+
 
 def entropy(glcm):
     entropy1 = -np.sum(glcm * np.log2(glcm + (glcm == 0)))
@@ -657,9 +715,6 @@ def GLCM_Feature_Extraction(img):
     feat = np.hstack((dis, eng, hom, cor, con, en))
     return feat
 
-
-
-
 def Feature_Extraction():
     images = np.load("segmentatione.npy")
     features = []
@@ -687,19 +742,6 @@ def Feature_Extraction():
     final_features = np.hstack((feat1, feat2))
     np.save("Features/final_features.npy", final_features)
 
-from sklearn.preprocessing import LabelEncoder
-from keras.models import Sequential
-from keras.layers.core import Dense, Dropout, Activation
-# from keras.layers.recurrent import LSTM
-# from tensorflow.keras.layers import LSTM
-from keras.models import load_model
-import keras
-import os
-from keras.layers import  Embedding, LSTM,Bidirectional,SimpleRNN,Conv1D
-from keras import metrics, regularizers
-from keras.optimizers import SGD,RMSprop, Adam, Adadelta, Adagrad ,Adamax, Nadam
-import seaborn as sns
-from keras.utils import np_utils
 def resize_features(features):
     new_height = 224
     new_width = 224
@@ -727,78 +769,26 @@ def split_data(features, labels,  train_size):
 
     return xtrain, xtest, ytrain, ytest
 
-from keras import layers
-# def oversample(X_train, y_train):
-#     ros = RandomOverSampler(random_state=42)
-#     X_resampled, y_resampled = ros.fit_resample(X_train, y_train)
-#     return X_resampled, y_resampled
 
-from sklearn.preprocessing import MinMaxScaler
-# #COMPARITIVE MODEL -1def LSTM_Model(xtrain, ytrain,xtest, ytest,epochs):
-# def LSTM_Model(xtrain, ytrain, xtest, ytest):
-#
-#     model = Sequential()
-#     model.add(Conv2D(32, (3, 3), padding="same", activation="relu", input_shape=(None, 150, 150, 3)))
-#     # model.add(LSTM(32, return_sequences=True))
-#     model.add(MaxPool2D((2, 2), strides=2))
-#
-#     model.add(Conv2D(32, (3, 3), padding="same", activation="relu"))
-#     # model.add(LSTM(64, return_sequences=True))
-#     model.add(MaxPool2D((2, 2), strides=2))
-#
-#     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
-#
-#     print('Model prepared...')
-#
-#     model.fit(xtrain, ytrain, batch_size=32, epochs=15, validation_split=0.2)
-#
-#     Y_pred = model.predict(xtest)
-#     Y_pred = np.argmax(Y_pred, axis=1)
-#     Y_true = np.argmax(ytest, axis=1)
-#
-#     return Y_pred, Y_true
+def LSTM_Model(xtrain, ytrain, xtest, ytest,epochs):
+    print(
+        '\033[46m' + '\033[30m' + "________________________LSTM Model prepared...__________________________________" + '\x1b[0m')
 
-def LSTM_Model(xtrain, ytrain, xtest, ytest):
-    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2, 1)
-    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2, 1)
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2)
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2)
 
     model = Sequential()
-    model.add(Conv2D(32, (3, 3), padding="same", activation="relu", input_shape = xtrain.shape[1:]))
-    model.add(MaxPooling2D((2, 2)))
-    # model.add(LSTM(32, return_sequences=True))
-    # model.add(LSTM(64, return_sequences=True))
-    # model.add(LSTM(128))
-    # model.add(Dropout(0.2))
-    # model.add(Flatten())
-    model.add(Dropout(0.5))
+    model.add(LSTM(32, return_sequences=False,input_shape = xtrain.shape[1:] ))
+    model.add(Dropout(0.2))
+    model.add(Flatten())
     model.add(Dense(ytrain.shape[1], activation="softmax"))
 
     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
 
-    print('Model prepared...')
+    print(
+        '\033[46m' + '\033[30m' + "________________________Training LSTM Model ..__________________________________" + '\x1b[0m')
 
-    model.fit(xtrain, ytrain, batch_size=32, epochs=10, validation_split=0.2)
-
-    Y_pred = model.predict(xtest)
-    Y_pred = np.argmax(Y_pred, axis=1)
-    Y_true = np.argmax(ytest, axis=1)
-
-    return Y_pred, Y_true
-
-
-def Bi_LSTM_MODEL(xtrain, ytrain, xtest, ytest):
-    epochs = 10
-    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2 ,1 )
-    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2 ,1)
-
-    model = Sequential()
-    model.add(Bidirectional(LSTM(128, activation='relu', return_sequences=False, input_shape = xtrain.shape[1:])))
-    model.add(Dropout(0.2))
-    model.add(Dense(ytrain.shape[1], activation='softmax'))
-
-    model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
-
-    print('Model prepared...')
+    # ytrain = resize_features(ytrain)
 
     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
 
@@ -809,8 +799,31 @@ def Bi_LSTM_MODEL(xtrain, ytrain, xtest, ytest):
     return Y_pred, Y_true
 
 
-def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest):
-    epochs = 5
+def Bi_LSTM_MODEL(xtrain, ytrain, xtest, ytest,epochs):
+
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2 )
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2 )
+
+    model = Sequential()
+    model.add(Bidirectional(LSTM(128, activation='relu', return_sequences=False, input_shape = xtrain.shape[1:])))
+    model.add(Dropout(0.2))
+    model.add(Dense(ytrain.shape[1], activation='softmax'))
+
+    model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
+
+    print(        '\033[46m' + '\033[30m' + "________________________Bi-LSTM Model prepared...__________________________________" + '\x1b[0m')
+
+
+    model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+
+    return Y_pred, Y_true
+
+def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest,epochs):
+
     xtrain = resize_features(xtrain)
     xtest = resize_features(xtest)
 
@@ -831,7 +844,7 @@ def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest):
 
     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
 
-    print('Model prepared...')
+    print('\033[46m' + '\033[30m' + "________________________CNN_Based_On_ResNet...__________________________________" + '\x1b[0m')
 
     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
 
@@ -841,71 +854,129 @@ def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest):
 
     return Y_pred, Y_true
 
-#//////////////Rnn
+#//////////////An Adaptive Attention Fusion Mechanism Convolutional Network
+def Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, ytrain,xtest, ytest,epochs):
+    model = Sequential()
+    model.add(Conv2D(filters=8, kernel_size=(5, 5), padding='Same', activation='relu', input_shape=(64, 64, 1)))
+    model.add(MaxPool2D(pool_size=(2, 2)))
+    model.add(Dropout(0.25))
+    model.add(Dense(2, activation='softmax'))
+    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-#//RNN pending
-# def RNN(xtrain, ytrain,xtest, ytest,epochs):
-#     epochs = 10
-#     xtrain = xtrain.reshape(xtrain.shape[0], 28, 28)
-#     xtest = xtest.reshape(xtest.shape[0], 28, 28)
-#
-#     model = tf.keras.Sequential([
-#         tf.keras.Input(shape=(28, 28)),
-#         tf.keras.layers.GRU(128),
-#         tf.keras.layers.Dense(128, activation='relu', input_shape=(28, 28,)),
-#         tf.keras.layers.Dropout(0.2, input_shape=(128,)),
-#         tf.keras.layers.Dense(10, activation='softmax')
-#     ])
-#     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-#     print('Model prepared...')
-#     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
-#     Y_pred = model.predict(xtest)
-#     Y_pred = np.argmax(Y_pred, axis=1)
-#     Y_true = np.argmax(ytest, axis=1)
-#
-#     return Y_pred, Y_true
-# #newCNN
-# def EfficientNetB3(xtrain, ytrain, xtest, ytest, epochs):
-#     y2train = ytrain.reshape(-1, 1)  # Reshape to (num_samples, 1)
-#
-#     y2train = to_categorical(ytrain)  # Convert to one-hot encoded format
-#       # Convert to one-hot encoded format
-#
-#     model_main = tf.keras.applications.efficientnet.EfficientNetB3(input_shape=(224, 224, 3), include_top=False,
-#                                                                    weights='imagenet')
-#     model_main.trainable = False
-#     model = tf.keras.Sequential([
-#         model_main,
-#         GlobalAveragePooling2D(name="avg_pool"),
-#         BatchNormalization(),
-#         Dropout(0.2, name="top_dropout"),
-#         Dense(256, activation='relu', activity_regularizer=tf.keras.regularizers.l2(1e-5)),
-#         Dropout(0.25),
-#         Dense(y2train.shape[1], activation="softmax")
-#     ])
-#
-#     model.compile(loss='binary_crossentropy', optimizer=RMSprop(lr=0.001, rho=0.9, epsilon=1e-6), metrics=['acc'])
-#
-#     print('Model prepared...')
-#
-#     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
-#
-#     Y_pred = model.predict(xtest)
-#     Y_pred = np.argmax(Y_pred, axis=1)
-#     Y_true = np.argmax(ytest, axis=1)
-#
-#     return Y_pred, Y_true
-#
+    print('\033[46m' + '\033[30m' + "------------ADAPTIVE_ATTENTION_FUSION_MECHANISM_CNN...____" + '\x1b[0m')
 
+    model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
 
+    Y_pred = model.predict(xtest)
+    Y_pred = np.argmax(Y_pred, axis=1)
+    Y_true = np.argmax(ytest, axis=1)
+    return Y_pred, Y_true
+
+def position_attention(input_feature, ratio=8):
+    # channel_axis = 1 if K.image_data_format() == "channels_first" else -1
+    channel_axis = -1
+    channel = input_feature.shape[channel_axis]
+
+    shared_layer_one = Dense(channel // ratio,
+                             activation='relu',
+                             kernel_initializer='he_normal',
+                             use_bias=True,
+                             bias_initializer='zeros')
+    shared_layer_two = Dense(channel,
+                             kernel_initializer='he_normal',
+                             use_bias=True,
+                             bias_initializer='zeros')
+
+    avg_pool = GlobalAveragePooling2D()(input_feature)
+    avg_pool = Reshape((1, 1, channel))(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel)
+    avg_pool = shared_layer_one(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel // ratio)
+    avg_pool = shared_layer_two(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel)
+
+    max_pool = GlobalMaxPooling2D()(input_feature)
+    max_pool = Reshape((1, 1, channel))(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+    max_pool = shared_layer_one(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel // ratio)
+    max_pool = shared_layer_two(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+
+    max_pool = GlobalMaxPooling2D()(input_feature)
+    max_pool = Reshape((1, 1, channel))(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+    max_pool = shared_layer_one(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel // ratio)
+    max_pool = shared_layer_two(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+
+    pam_feature = Add()([avg_pool, max_pool])
+    pam_feature = Activation('softmax')(pam_feature)
+
+    return multiply([input_feature, pam_feature])
+
+class ZeroChannelAttention:
+    def __init__(self):
+        self.avg_pool =  GlobalAveragePooling2D()
+        self.max_pool = GlobalMaxPooling2D()
+
+        self.sigmoid =Activation('sigmoid')
+
+    def forward(self, x):
+        self.avg_pool=self.avg_pool(x)
+        self.max_pool=self.max_pool(x)
+        self.x=Add()([self.avg_pool, self.max_pool])
+        self.x=self.sigmoid(self.x)
+        return self.x
+
+class ZeroSpatialAttention:
+    def __init__(self):
+        self.sigmoid =Activation('sigmoid')
+
+    def forward(self, X):
+        self.avg_out =  Lambda(lambda x: K.mean(x, axis=3, keepdims=True))(X)
+        self.max_out= Lambda(lambda x: K.max(x, axis=3, keepdims=True))(X)
+        self.x = Add()([self.avg_out, self.max_out])
+        self.x = self.sigmoid(self.x)
+        return self.x
+
+class HybridAttention:
+    def __init__(self, x,use_skip_connection=False):
+        self.x=x
+        self.ca = ZeroChannelAttention()
+        self.sa = ZeroSpatialAttention()
+        self.use_skip_connection = use_skip_connection
+
+    def forward(self):
+        out = self.x
+        out = out + out * self.sa.forward(out) if self.use_skip_connection else out * self.sa.forward(out)
+        out =out[:self.x.shape[0], :self.x.shape[1], :self.x.shape[2], :self.x.shape[3]]
+        ## Hybrid
+        out=np.array(out)
+        out=position_attention(out)
+        return out
+
+def Hybrid_Attention_Block(w):
+    import tensorflow as tf
+    x = tf.convert_to_tensor(w)
+    feature = HybridAttention(x).forward()
+    newweight = tf.reshape(feature, [w.shape[0], w.shape[1], w.shape[2],w.shape[3]])
+    newweight = np.array(newweight)
+    return newweight
+
+def Hybrid_Attention_Module(model):
+    weights = model.get_weights()
+    weight = weights[0]
+    tunedweight = Hybrid_Attention_Block(weight)
+    weights[0]=tunedweight
+    model.set_weights(weights)
+    return model
 
 # Define your CNN model
-def Hybrid_Attention_Based_Explainable_CNN(xtrain, ytrain,xtest, ytest,epochs):
-
+def Hybrid_Attention_Based_Explainable_CNN(xtrain,ytrain,xtest, ytest,epochs,option):
     xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2, 1)
     xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2, 1)
-
-
     model = keras.Sequential()
     model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', padding="same",input_shape = xtrain.shape[1:]))
     model.add(MaxPooling2D(pool_size=(1,1)))
@@ -925,6 +996,7 @@ def Hybrid_Attention_Based_Explainable_CNN(xtrain, ytrain,xtest, ytest,epochs):
     model.add(Dropout(0.2))
 
     model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding="same"))
+    model = Hybrid_Attention_Module(model)
     model.add(MaxPooling2D(pool_size=(1,1)))
     model.add(BatchNormalization())
     model.add(Dropout(0.2))
@@ -935,16 +1007,73 @@ def Hybrid_Attention_Based_Explainable_CNN(xtrain, ytrain,xtest, ytest,epochs):
     model.add(Dense(128, activation='relu'))
     model.add(Dropout(0.3))
     model.add(Dense(ytrain.shape[1], activation='softmax')) ## No of classes
-
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-    print('Model prepared...')
+    print('\033[46m' + '\033[30m' + "________________________Hybrid Attention Based Explainable CNN Model prepared...__________________________________" + '\x1b[0m')
+
     model.fit(xtrain, ytrain, batch_size=32, epochs=epochs, validation_split=0.2)
+    if option == 0:
+        model = model
+    else:
+        op = Optimization(model, xtest, ytest)
+        model = op.main_update_hyperparameters(option)
+
     Y_pred = model.predict(xtest)
     Y_pred = np.argmax(Y_pred, axis=1)
     Y_true = np.argmax(ytest, axis=1)
     return Y_pred,Y_true
 
-from sklearn.metrics import confusion_matrix
+class Optimization:
+    def __init__(self, model, x_test, y_test):
+        self.model = model
+        self.x_test = x_test
+        self.y_test = y_test
+
+    def fitness_function1(self, solution):
+        print(colored("Fitness Function >> ", color='blue', on_color='on_grey'))
+        wei_to_train = self.model.get_weights()
+        wei_sh = wei_to_train[0]
+        wei = solution.reshape(wei_sh.shape[0], wei_sh.shape[1], wei_sh.shape[2], wei_sh.shape[3])
+        wei_to_train[0] = wei
+        self.model.set_weights(wei_to_train)
+        preds = self.model.predict(self.x_test)
+        preds = np.argmax(preds, axis=1)
+        y1_test = np.argmax(self.y_test, axis=1)
+        acc = accuracy_score(y1_test, preds)
+        return acc
+
+    def main_weight_updation_optimization(self, curr_wei,option):
+        problem_dict1 = {
+            "fit_func": self.fitness_function1,
+            "lb": [curr_wei.min(), ] * curr_wei.shape[0] * curr_wei.shape[1],
+            "ub": [curr_wei.max(), ] * curr_wei.shape[0] * curr_wei.shape[1],
+            "minmax": "max",
+            "log_to": None,
+            "save_population": False,
+            "Curr_Weight": curr_wei,
+        }
+        if option==1:
+            print((colored("[INFO] Coyote Optimization \U0001F43A", 'magenta', on_color='on_grey')))
+            model = COA(problem_dict1, epoch=2, pop_size=10)
+            best_position2, best_fitness2 = model.solve()
+        elif option==2:
+            print((colored("[INFO] Grey Wolf Optimization \U0001F43A", 'magenta', on_color='on_grey')))
+            model = GWO(problem_dict1, epoch=2, pop_size=10)
+            best_position2, best_fitness2 = model.solve()
+        else:
+            print((colored("[INFO] Proposed Optimization \U0001F43A", 'magenta', on_color='on_grey')))
+            model = Prop(problem_dict1, epoch=2, pop_size=10)
+            best_position2, best_fitness2 = model.solve()
+        return best_position2
+
+    def main_update_hyperparameters(self, option):
+        wei_to_train = self.model.get_weights()
+        to_opt_1 = wei_to_train[0]
+        re_to_opt_1 = to_opt_1.reshape(to_opt_1.shape[0] * to_opt_1.shape[1], to_opt_1.shape[2] * to_opt_1.shape[3])
+        wei_to_train_1 = self.main_weight_updation_optimization(re_to_opt_1, option)
+        to_opt_new = wei_to_train_1.reshape(to_opt_1.shape[0], to_opt_1.shape[1], to_opt_1.shape[2], to_opt_1.shape[3])
+        wei_to_train[0] = to_opt_new
+        self.model.set_weights(wei_to_train)
+        return self.model
 
 def main_est_perf_metrics(preds, y_test):
 
@@ -985,19 +1114,6 @@ def main_est_perf_metrics(preds, y_test):
     '''Positive Predictive Value'''
     PPV = TP / (TP + FP)  # Positive Predictive Value
 
-    # print("Accuracy:", ACC)
-    # print("Sensitivity:", SEN)
-    # print("Specificity:", SPE)
-    # print("Precision:", PRE1)
-    # print("Recall:", REC1)
-    # print("F1 Score:", FSC1)
-    # print("CSI:", CSI1)
-    # print("FPR:", FPR1)
-    # print("FNR:", FNR1)
-    # print("MCC:", MCC1)
-    # print("PPV:", PPV1)
-    # print("NPV:", NPV1)
-
     return [acc, sen, spe, pre,rec,f1_score,CSI,FPR,FNR,MCC,PPV,NPV]
 
 def oversample(X_train, y_train):
@@ -1005,22 +1121,44 @@ def oversample(X_train, y_train):
     X_resampled, y_resampled = ros.fit_resample(X_train, y_train)
     return X_resampled, y_resampled
 
+def Explainable(image):
+    image = cv2.cvtColor(np.uint8(image), cv2.COLOR_GRAY2BGR)## convert it into color
+    Final = Guided_Propagation_Model(image, CAM_Model=GradCAMPlusPlus) ## GradCam++ alogrithm
+    # Reshape Final to have 2154 rows and 3 columns
+    Final_reshaped = Final.reshape(1, 2154, 3)
 
-def Tp_Analysis():
-    features = np.load("Final Featres/final_features.npy")
-    labels = np.load("Final Featres/Labels.npy")
+    # Check the shape of the reshaped array
+    print(Final_reshaped.shape)  # Output: (1, 2154, 3)
 
+    return Final_reshaped
+    return Final
+
+def Explainable_CNN_features(feat,option):
+    if option==True:
+        x_feat = []
+        for i in range(feat.shape[0]):
+            print(i)
+            x_feat.append(Explainable(feat[i]))
+        x_feat = np.vstack(x_feat)
+    else:
+        x_feat=np.load("Features/final_features.npy")
+    return x_feat
+
+def TP_Analysis(features,labels):
+    features = Explainable_CNN_features(features, False)
     le = LabelEncoder()
 
     labels = le.fit_transform(labels)
 
     features, labels = oversample(features, labels)
 
-    epochs = [2, 4, 6, 8, 10]  # No. of Iterations
+    epochs = [2, 4, 6, 8, 1]  # No. of Iterations
 
-    tr = [0.4, 0.5, 0.6, 0.7, 0.8]  # Variation of Training Percentage - takes datasets rom smaller percentage to higher percentage to give the training percentage
-
+    # tr = [0.4, 0.5, 0.6, 0.7, 0.8]  # Variation of Training Percentage - takes datasets rom smaller percentage to higher percentage to give the training percentage
+    tr = [0.7, 0.8]
+    # 0 - hYBRID attENTION X CNN ,!-COA +   hYBRID attENTION X CNN , 2-GWO +  hYBRID attENTION X CNN,3 - Proposed  hYBRID attENTION X CNN
     options = [0, 1, 2, 3]
+
     COM_A = []
     COM_B = []
     COM_C = []
@@ -1030,6 +1168,9 @@ def Tp_Analysis():
     COM_G = []
     COM_H = []
     COM_I = []
+    COM_J = []
+    COM_K = []
+    COM_L = []
 
     for p in range(len(tr)):
         print(  '\033[46m' + '\033[30m' + "Training Percentage and Testing Percentage : " + str(tr[p] * 100) + " and " + str(
@@ -1041,57 +1182,635 @@ def Tp_Analysis():
         y1test = to_categorical(ytest)
 
         print('\033[46m' + '\033[30m' + "------------------------------MODEL TRAINING SECTION---------------------------------------"  + '\x1b[0m')
-        Y_pred1, Y_true1 = LSTM_Model(xtrain,y1train,xtest,y1test)
-        Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain,y1train,xtest,y1test)
-        Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain,y1train,xtest,y1test)
-        # Y_pred4, Y_true4 = RNN(xtrain,y1train,xtest,y1test)
-        Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain,y1train,xtest,y1test,epochs[0])
-        Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[1])
-        Y_pred7, Y_true7 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[2])
-        Y_pred8, Y_true8 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[3])
-        Y_pred9, Y_true9 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4])
-
-
+        # Y_pred1, Y_true1 = LSTM_Model(xtrain,y1train,xtest,y1test, epochs[4])
+        # Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain,y1train,xtest,y1test, epochs[4])
+        # Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain,y1train,xtest,y1test, epochs[4])
+        # Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain,y1train,xtest,y1test,epochs[4])
+        Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],options[0])
+        Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4], options[1])
+        Y_pred7, Y_true7 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4], options[2])
+        Y_pred8, Y_true8 = Hybrid_Attention_Based_Explainable_CNN(xtrain,y1train,xtest,y1test,epochs[0], options[3])
+        Y_pred9, Y_true9 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[1], options[3])
+        Y_pred10, Y_true10 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[2], options[3])
+        Y_pred11, Y_true11 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[3], options[3])
+        Y_pred12, Y_true12 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4], options[3])
 
         print('\033[46m' + '\033[30m' + "________________________Metrics Evaluated from Confusion Matrix__________________________________" + '\x1b[0m')
 
         [ACC1, SEN1, SPE1, PRE1, REC1, FSC1, CSI1, FPR1, FNR1, MCC1, PPV1, NPV1] = main_est_perf_metrics(Y_pred1,Y_true1)
         [ACC2, SEN2, SPE2, PRE2, REC2, FSC2, CSI2, FPR2, FNR2, MCC2, PPV2, NPV2] = main_est_perf_metrics(Y_pred2, Y_true2)
         [ACC3, SEN3, SPE3, PRE3, REC3, FSC3, CSI3, FPR3, FNR3, MCC3, PPV3, NPV3] = main_est_perf_metrics(Y_pred3, Y_true3)
-        # [ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4] = main_est_perf_metrics(Y_pred4, Y_true4 )
+        [ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4] = main_est_perf_metrics(Y_pred4, Y_true4 )
         [ACC5, SEN5, SPE5, PRE5, REC5, FSC5, CSI5, FPR5, FNR5, MCC5, PPV5, NPV5] = main_est_perf_metrics(Y_pred5, Y_true5)
         [ACC6, SEN6, SPE6, PRE6, REC6, FSC6, CSI6, FPR6, FNR6, MCC6, PPV6, NPV6] = main_est_perf_metrics(Y_pred6, Y_true6)
         [ACC7, SEN7, SPE7, PRE7, REC7, FSC7, CSI7, FPR7, FNR7, MCC7, PPV7, NPV7] = main_est_perf_metrics(Y_pred7, Y_true7)
         [ACC8, SEN8, SPE8, PRE8, REC8, FSC8, CSI8, FPR8, FNR8, MCC8, PPV8, NPV8] = main_est_perf_metrics(Y_pred8, Y_true8)
         [ACC9, SEN9, SPE9, PRE9, REC9, FSC9, CSI9, FPR9, FNR9, MCC9, PPV9, NPV9] = main_est_perf_metrics(Y_pred9, Y_true9)
+        [ACC10, SEN10, SPE10, PRE10, REC10, FSC10, CSI10, FPR10, FNR10, MCC10, PPV10, NPV10] = main_est_perf_metrics(Y_pred10,Y_true10)
+        [ACC11, SEN11, SPE11, PRE11, REC11, FSC11, CSI11, FPR11, FNR11, MCC11, PPV11, NPV11] = main_est_perf_metrics(Y_pred11, Y_true11)
+        [ACC12, SEN12, SPE12, PRE12, REC12, FSC12, CSI12, FPR12, FNR12, MCC12, PPV12, NPV12] = main_est_perf_metrics( Y_pred12, Y_true12)
 
         print('\033[46m' + '\033[30m' +"________________________Save Metrics__________________________________" + '\x1b[0m')
 
         COM_A.append([ACC1, SEN1, SPE1, PRE1, REC1, FSC1, CSI1, FPR1, FNR1, MCC1, PPV1, NPV1])
         COM_B.append([ACC2, SEN2, SPE2, PRE2, REC2, FSC2, CSI2, FPR2, FNR2, MCC2, PPV2, NPV2])
         COM_C.append([ACC3, SEN3, SPE3, PRE3, REC3, FSC3, CSI3, FPR3, FNR3, MCC3, PPV3, NPV3])
-        # COM_D.append([ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4])
+        COM_D.append([ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4, MCC4, PPV4, NPV4])
         COM_E.append([ACC5, SEN5, SPE5, PRE5, REC5, FSC5, CSI5, FPR5, FNR5, MCC5, PPV5, NPV5])
         COM_F.append([ACC6, SEN6, SPE6, PRE6, REC6, FSC6, CSI6, FPR6, FNR6, MCC6, PPV6, NPV6])
         COM_G.append([ACC7, SEN7, SPE7, PRE7, REC7, FSC7, CSI7, FPR7, FNR7, MCC7, PPV7, NPV7])
         COM_H.append([ACC8, SEN8, SPE8, PRE8, REC8, FSC8, CSI8, FPR8, FNR8, MCC8, PPV8, NPV8])
         COM_I.append([ACC9, SEN9, SPE9, PRE9, REC9, FSC9, CSI9, FPR9, FNR9, MCC9, PPV9, NPV9])
-
+        COM_J.append([ACC10, SEN10, SPE10, PRE10, REC10, FSC10, CSI10, FPR10, FNR10, MCC10, PPV10, NPV10])
+        COM_K.append([ACC11, SEN11, SPE11, PRE11, REC11, FSC11, CSI11, FPR11, FNR11, MCC11, PPV11, NPV11])
+        COM_L.append([ACC12, SEN12, SPE12, PRE12, REC12, FSC12, CSI12, FPR12, FNR12, MCC12, PPV12, NPV12])
 
     np.save('NPY\\COM_A.npy'.format(os.getcwd()), COM_A)
     np.save('NPY\\COM_B.npy'.format(os.getcwd()), COM_B)
     np.save('NPY\\COM_C.npy'.format(os.getcwd()), COM_C)
-    # np.save('NPY\\COM_D.npy'.format(os.getcwd()), COM_D)
+    np.save('NPY\\COM_D.npy'.format(os.getcwd()), COM_D)
     np.save('NPY\\COM_E.npy'.format(os.getcwd()), COM_E)
     np.save('NPY\\COM_F.npy'.format(os.getcwd()), COM_F)
     np.save('NPY\\COM_G.npy'.format(os.getcwd()), COM_G)
     np.save('NPY\\COM_H.npy'.format(os.getcwd()), COM_H)
     np.save('NPY\\COM_I.npy'.format(os.getcwd()), COM_I)
+    np.save('NPY\\COM_J.npy'.format(os.getcwd()), COM_J)
+    np.save('NPY\\COM_K.npy'.format(os.getcwd()), COM_K)
+    np.save('NPY\\COM_L.npy'.format(os.getcwd()), COM_L)
 
-Tp_Analysis()
+def parameter(acc, sen, spe, pre, rec, fsc,csi,fpr,fnr,mcc,ppv,npv):
+    acc = np.mean(acc)
+    sen = np.mean(sen)
+    spe = np.mean(spe)
+    pre = np.mean(pre)
+    rec = np.mean(rec)
+    fsc = np.mean(fsc)
+    csi=np.mean(csi)
+    fpr=np.mean(fpr)
+    fnr=np.mean(fnr)
+    mcc=np.mean(mcc)
+    ppv=np.mean(ppv)
+    npv=np.mean(npv)
+    return [acc, sen, spe, pre, rec, fsc,csi,fpr,fnr,mcc,ppv,npv]
+
+def  KF_Analysis(feat,lab):
+
+    features = Explainable_CNN_features(feat, True)
+    le = LabelEncoder()
 
 
+    labels = le.fit_transform(lab)
+    features, labels = oversample(features, labels)
+    # features, labels = oversample(features, labels)
+    """K-fold cross-validation approach divides the input dataset into K groups of samples of equal sizes.
+     These samples are called folds. For each learning set, the prediction function uses k-Cotton Leaf folds,
+      and the rest of the folds are used for the test set. This approach is a very popular CV approach
+      because it is easy to understand, and the output is less biased than other methods."""
+    kr = [4, 6, 8, 10]
+    """An epoch in machine learning means one complete pass of the training dataset through the algorithm.
+         This epoch's number is an important hyperparameter for the algorithm. 
+         It specifies the number of epochs or complete passes of the entire training dataset passing through the training or learning process of the algorithm"""
+    epochs =[2,3,4,5,1] # No. of Iterations
+    # epochs = [10, 20, 30, 40, 50]
+    """A label represents an output value,
+       while a feature is an input value that describes the characteristics of such labels in datasets"""
+    features = np.nan_to_num(features, 0)
+    options = [0, 1, 2, 3]
+    """Normalization is a technique often applied as part of data preparation for machine learning. 
+        The goal of normalization is to change the values of numeric columns in the dataset to use a common scale,
+         without distorting differences in the ranges of values or losing information"""
+    ## Normalization
+    feat = features.astype(np.float32) / features.max()
 
+    COM_A = []
+    COM_B = []
+    COM_C = []
+    COM_D = []
+    COM_E = []
+    COM_F = []
+    COM_G = []
+    COM_H = []
+
+    """The steps for k-fold cross-validation are:
+            Split the input dataset into K groups
+        For each group:
+        Take one group as the reserve or test data set.
+        Use remaining groups as the training dataset
+        Fit the model on the training set and evaluate the performance of the model using the test set."""
+    for w in range(len(kr)):
+        print(kr[w])
+        strtfdKFold = StratifiedKFold(n_splits=kr[w])
+        kfold = strtfdKFold.split(feat, labels)
+        acc1, sen1, spe1, pre1, rec1, fsc1,csi1,fpr1,fnr1,mcc1,ppv1,npv1 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc2, sen2, spe2, pre2, rec2, fsc2,csi2,fpr2,fnr2,mcc2,ppv2,npv2 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc3, sen3, spe3, pre3, rec3, fsc3,csi3,fpr3,fnr3,mcc3,ppv3,npv3 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc4, sen4, spe4, pre4, rec4, fsc4,csi4,fpr4,fnr4,mcc4,ppv4,npv4 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc5, sen5, spe5, pre5, rec5, fsc5,csi5,fpr5,fnr5,mcc5,ppv5,npv5= [], [], [], [], [], [], [], [], [], [], [], []
+        acc6, sen6, spe6, pre6, rec6, fsc6,csi6,fpr6,fnr6,mcc6,ppv6,npv6 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc7, sen7, spe7, pre7, rec7, fsc7,csi7,fpr7,fnr7,mcc7,ppv7,npv7 = [], [], [], [], [], [], [], [], [], [], [], []
+        acc8, sen8, spe8, pre8, rec8, fsc8,csi8,fpr8,fnr8 ,mcc8,ppv8,npv8= [], [], [], [], [], [], [], [], [], [], [], []
+
+        """Let's take an example of 5-folds cross-validation. So, the dataset is grouped into 5 folds.
+            On 1st iteration, the first fold is reserved for test the model, and rest are used to train the model.
+             On 2nd iteration, the second fold is used to test the model, and rest are used to train the model. 
+             This process will continue until each fold is not used for the test fold."""
+
+        for k, (train, test) in enumerate(kfold):
+            if k==0:
+                tr_data = feat[train, :]
+                tr_data = tr_data[:, :]
+                ytrain = labels[train]
+                tst_data = feat[test, :]
+                tst_data = tst_data[:, :]
+                ytest = labels[test]
+                xtrain = tr_data
+                xtest = tst_data
+
+                y1train = keras.utils.to_categorical(ytrain)
+                y1test = keras.utils.to_categorical(ytest)
+
+                print("------------------------------MODEL TRAINING SECTION---------------------------------------")
+
+                Y_pred1, Y_true1 = LSTM_Model(xtrain, y1train, xtest, y1test, epochs[4])
+                Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain, y1train, xtest, y1test, epochs[4])
+                Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain, y1train, xtest, y1test, epochs[4])
+                Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, y1train, xtest, y1test, epochs[4])
+                Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
+                                                                          options[0])
+                Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
+                                                                          options[1])
+                Y_pred7, Y_true7 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
+                                                                          options[2])
+                Y_pred8, Y_true8 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
+                                                                          options[3])
+
+                print("________________________Metrics Evaluated from Confusion Matrix__________________________________")
+                [ACC1, SEN1, SPE1, PRE1, REC1, FSC1, CSI1, FPR1, FNR1,MCC1,PPV1,NPV1] = main_est_perf_metrics(Y_pred1, Y_true1)
+                [ACC2, SEN2, SPE2, PRE2, REC2, FSC2, CSI2, FPR2, FNR2,MCC2,PPV2,NPV2] = main_est_perf_metrics(Y_pred2, Y_true2)
+                [ACC3, SEN3, SPE3, PRE3, REC3, FSC3, CSI3, FPR3, FNR3,MCC3,PPV3,NPV3] = main_est_perf_metrics(Y_pred3, Y_true3)
+                [ACC4, SEN4, SPE4, PRE4, REC4, FSC4, CSI4, FPR4, FNR4,MCC4,PPV4,NPV4] = main_est_perf_metrics(Y_pred4, Y_true4)
+                [ACC5, SEN5, SPE5, PRE5, REC5, FSC5, CSI5, FPR5, FNR5,MCC5,PPV5,NPV5] = main_est_perf_metrics(Y_pred5, Y_true5)
+                [ACC6, SEN6, SPE6, PRE6, REC6, FSC6, CSI6, FPR6, FNR6,MCC6,PPV6,NPV6] = main_est_perf_metrics(Y_pred6, Y_true6)
+                [ACC7, SEN7, SPE7, PRE7, REC7, FSC7, CSI7, FPR7, FNR7,MCC7,PPV7,NPV7] = main_est_perf_metrics(Y_pred7, Y_true7)
+                [ACC8, SEN8, SPE8, PRE8, REC8, FSC8, CSI8, FPR8, FNR8,MCC8,PPV8,NPV8] = main_est_perf_metrics(Y_pred8, Y_true8)
+
+                acc1.append(ACC1)
+                sen1.append(SEN1)
+                spe1.append(SPE1)
+                pre1.append(PRE1)
+                rec1.append(REC1)
+                fsc1.append(FSC1)
+                acc2.append(ACC2)
+                sen2.append(SEN2)
+                spe2.append(SPE2)
+                pre2.append(PRE2)
+                rec2.append(REC2)
+                fsc2.append(FSC2)
+                acc3.append(ACC3)
+                sen3.append(SEN3)
+                spe3.append(SPE3)
+                pre3.append(PRE3)
+                rec3.append(REC3)
+                fsc3.append(FSC3)
+                acc4.append(ACC4)
+                sen4.append(SEN4)
+                spe4.append(SPE4)
+                pre4.append(PRE4)
+                rec4.append(REC4)
+                fsc4.append(FSC4)
+                acc5.append(ACC5)
+                sen5.append(SEN5)
+                spe5.append(SPE5)
+                pre5.append(PRE5)
+                rec5.append(REC5)
+                fsc5.append(FSC5)
+                acc6.append(ACC6)
+                sen6.append(SEN6)
+                spe6.append(SPE6)
+                pre6.append(PRE6)
+                rec6.append(REC6)
+                fsc6.append(FSC6)
+                acc7.append(ACC7)
+                sen7.append(SEN7)
+                spe7.append(SPE7)
+                pre7.append(PRE7)
+                rec7.append(REC7)
+                fsc7.append(FSC7)
+                acc8.append(ACC8)
+                sen8.append(SEN8)
+                spe8.append(SPE8)
+                pre8.append(PRE8)
+                rec8.append(REC8)
+                fsc8.append(FSC8)
+                csi1.append(CSI1)
+                fpr1.append(FPR1)
+                fnr1.append(FNR1)
+                csi2.append(CSI2)
+                fpr2.append(FPR2)
+                fnr2.append(FNR2)
+                csi3.append(CSI3)
+                fpr3.append(FPR3)
+                fnr3.append(FNR3)
+                csi4.append(CSI4)
+                fpr4.append(FPR4)
+                fnr4.append(FNR4)
+                csi5.append(CSI5)
+                fpr5.append(FPR5)
+                fnr5.append(FNR5)
+                csi6.append(CSI6)
+                fpr6.append(FPR6)
+                fnr6.append(FNR6)
+                csi7.append(CSI7)
+                fpr7.append(FPR7)
+                fnr7.append(FNR7)
+                csi8.append(CSI8)
+                fpr8.append(FPR8)
+                fnr8.append(FNR8)
+                mcc1.append(MCC1)
+                ppv1.append(PPV1)
+                npv1.append(NPV1)
+                mcc2.append(MCC2)
+                ppv2.append(PPV2)
+                npv2.append(NPV2)
+                mcc3.append(MCC3)
+                ppv3.append(PPV3)
+                npv3.append(NPV3)
+                mcc4.append(MCC4)
+                ppv4.append(PPV4)
+                npv4.append(NPV4)
+                mcc5.append(MCC5)
+                ppv5.append(PPV5)
+                npv5.append(NPV5)
+                mcc6.append(MCC6)
+                ppv6.append(PPV6)
+                npv6.append(NPV6)
+                mcc7.append(MCC7)
+                ppv7.append(PPV7)
+                npv7.append(NPV7)
+                mcc8.append(MCC8)
+                ppv8.append(PPV8)
+                npv8.append(NPV8)
+
+        [ACC_1, SEN_1, SPE_1, PRE_1, REC_1, FSC_1,CSI_1,FPR_1,FNR_1,MCC_1,PPV_1,NPV_1] = parameter(acc1, sen1, spe1, pre1, rec1, fsc1,csi1,fpr1,fnr1,mcc1,ppv1,npv1)
+        [ACC_2, SEN_2, SPE_2, PRE_2, REC_2, FSC_2,CSI_2,FPR_2,FNR_2,MCC_2,PPV_2,NPV_2] = parameter(acc2, sen2, spe2, pre2, rec2, fsc2,csi2,fpr2,fnr2,mcc2,ppv2,npv2)
+        [ACC_3, SEN_3, SPE_3, PRE_3, REC_3, FSC_3,CSI_3,FPR_3,FNR_3,MCC_3,PPV_3,NPV_3] = parameter(acc3, sen3, spe3, pre3, rec3, fsc3,csi3,fpr3,fnr3,mcc3,ppv3,npv3)
+        [ACC_4, SEN_4, SPE_4, PRE_4, REC_4, FSC_4,CSI_4,FPR_4,FNR_4,MCC_4,PPV_4,NPV_4] = parameter(acc4, sen4, spe4, pre4, rec4, fsc4,csi4,fpr4,fnr4,mcc4,ppv4,npv4)
+        [ACC_5, SEN_5, SPE_5, PRE_5, REC_5, FSC_5,CSI_5,FPR_5,FNR_5,MCC_5,PPV_5,NPV_5] = parameter(acc5, sen5, spe5, pre5, rec5, fsc5,csi5,fpr5,fnr5,mcc5,ppv5,npv5)
+        [ACC_6, SEN_6, SPE_6, PRE_6, REC_6, FSC_6,CSI_6,FPR_6,FNR_6,MCC_6,PPV_6,NPV_6] = parameter(acc6, sen6, spe6, pre6, rec6, fsc6,csi6,fpr6,fnr6,mcc6,ppv6,npv6)
+        [ACC_7, SEN_7, SPE_7, PRE_7, REC_7, FSC_7,CSI_7,FPR_7,FNR_7,MCC_7,PPV_7,NPV_7] = parameter(acc7, sen7, spe7, pre7, rec7, fsc7,csi7,fpr7,fnr7,mcc7,ppv7,npv7)
+        [ACC_8, SEN_8, SPE_8, PRE_8, REC_8, FSC_8,CSI_8,FPR_8,FNR_8,MCC_8,PPV_8,NPV_8] = parameter(acc8, sen8, spe8, pre8, rec8, fsc8,csi8,fpr8,fnr8,mcc8,ppv8,npv8)
+
+
+        COM_A.append([ACC_1, SEN_1, SPE_1, PRE_1, REC_1, FSC_1,CSI_1,FPR_1,FNR_1,MCC_1,PPV_1,NPV_1])
+        COM_B.append([ACC_2, SEN_2, SPE_2, PRE_2, REC_2, FSC_2,CSI_2,FPR_2,FNR_2,MCC_2,PPV_2,NPV_2])
+        COM_C.append([ACC_3, SEN_3, SPE_3, PRE_3, REC_3, FSC_3,CSI_3,FPR_3,FNR_3,MCC_3,PPV_3,NPV_3])
+        COM_D.append([ACC_4, SEN_4, SPE_4, PRE_4, REC_4, FSC_4,CSI_4,FPR_4,FNR_4,MCC_4,PPV_4,NPV_4])
+        COM_E.append([ACC_5, SEN_5, SPE_5, PRE_5, REC_5, FSC_5,CSI_5,FPR_5,FNR_5,MCC_5,PPV_5,NPV_5])
+        COM_F.append([ACC_6, SEN_6, SPE_6, PRE_6, REC_6, FSC_6,CSI_6,FPR_6,FNR_6,MCC_6,PPV_6,NPV_6])
+        COM_G.append([ACC_7, SEN_7, SPE_7, PRE_7, REC_7, FSC_7,CSI_7,FPR_7,FNR_7,MCC_7,PPV_7,NPV_7])
+        COM_H.append([ACC_8, SEN_8, SPE_8, PRE_8, REC_8, FSC_8,CSI_8,FPR_8,FNR_8,MCC_8,PPV_8,NPV_8])
+
+    np.save('NPY1\\COM_A.npy'.format(os.getcwd()), COM_A)
+    np.save('NPY1\\COM_B.npy'.format(os.getcwd()), COM_B)
+    np.save('NPY1\\COM_C.npy'.format(os.getcwd()), COM_C)
+    np.save('NPY1\\COM_D.npy'.format(os.getcwd()), COM_D)
+    np.save('NPY1\\COM_E.npy'.format(os.getcwd()), COM_E)
+    np.save('NPY1\\COM_F.npy'.format(os.getcwd()), COM_F)
+    np.save('NPY1\\COM_G.npy'.format(os.getcwd()), COM_G)
+    np.save('NPY1\\COM_H.npy'.format(os.getcwd()), COM_H)
+
+def Complete_Figure_com(perf, val, str_1, xlab, ylab,name):
+    perf = perf * 100
+    a = perf[:, 0]
+    b = perf[:, 1]
+    c = perf[:, 2]
+    d = perf[:, 3]
+    e= perf[:,4]
+    dict = {'40': a, '50': b, '60': c, '70': d,'80':e}
+    df = pd.DataFrame(dict, index=[str_1])
+    df.to_csv('Results_P1\\TP\\Comp_Analysis\\' + '_' + str(val) + str(name) +'_' + 'Graph.csv')
+    df1 = {
+        'No.of.records': ['40', '40', '40', '40', '40', '40', '40', '40',
+                          '50', '50', '50', '50', '50', '50', '50', '50',
+                          '60', '60', '60', '60', '60', '60', '60', '60',
+                          '70', '70', '70', '70', '70', '70', '70', '70',
+                          '80', '80', '80', '80', '80', '80', '80', '80'],
+        'Accuracy(%)': [perf[0, 0], perf[1, 0], perf[2, 0], perf[3, 0], perf[4, 0], perf[5, 0], perf[6, 0], perf[7, 0]
+            , perf[0, 1], perf[1, 1], perf[2, 1], perf[3, 1], perf[4, 1], perf[5, 1], perf[6, 1], perf[7, 1]
+            , perf[0, 2], perf[1, 2], perf[2, 2], perf[3, 2], perf[4, 2], perf[5, 2], perf[6, 2], perf[7, 2]
+            , perf[0, 3], perf[1, 3], perf[2, 3], perf[3, 3], perf[4, 3], perf[5, 3], perf[6, 3], perf[7, 3]
+            , perf[0, 4], perf[1, 4], perf[2, 4], perf[3, 4], perf[4, 4], perf[5, 4], perf[6, 4], perf[7, 4]],
+        'Legend': [str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7]]}
+    plt.figure()
+    sns.set_style("whitegrid")
+    sns.set(font_scale=0.8)
+    sns.barplot(x='No.of.records', y='Accuracy(%)', hue='Legend',palette=['#6600ff','#ff9900','#cc00ff','#99ff33','#1ab2ff','#ff6600','#669900','#cc3300'],data=df1)
+    plt.legend(ncol=2,loc='lower center', fontsize=15,prop={"weight":"bold"})
+    plt.xlabel(xlab, fontsize=15, weight='bold')
+    plt.ylabel(ylab, fontsize=15, weight='bold')
+    plt.savefig('Results_P1\\TP\\Comp_Analysis\\' + str(val) + '_' + str(name) +'Graph.png', dpi=800)
+    plt.show(block=False)
+    plt.clf()
+
+def load_perf_value_saved_Algo_Analysis_1():
+    perf_A = np.load('NPY\\COM_A.npy')
+    perf_B = np.load('NPY\\COM_B.npy')
+    perf_C = np.load('NPY\\COM_C.npy')
+    perf_D = np.load('NPY\\COM_D.npy')
+    perf_E = np.load('NPY\\COM_E.npy')
+    perf_F = np.load('NPY\\COM_F.npy')
+    perf_G = np.load('NPY\\COM_G.npy')
+    perf_H = np.load('NPY\\COM_H.npy')
+    perf_I = np.load('NPY\\COM_I.npy')
+    perf_J = np.load('NPY\\COM_J.npy')
+    perf_K = np.load('NPY\\COM_K.npy')
+    perf_L = np.load('NPY\\COM_L.npy')
+
+    A = np.asarray(perf_A[:][:])
+    B = np.asarray(perf_B[:][:])
+    C = np.asarray(perf_C[:][:])
+    D = np.asarray(perf_D[:][:])
+    E = np.asarray(perf_E[:][:])
+    F = np.asarray(perf_F[:][:])
+    G = np.asarray(perf_G[:][:])
+    H = np.asarray(perf_H[:][:])
+    I = np.asarray(perf_I[:][:])
+    J = np.asarray(perf_J[:][:])
+    K = np.asarray(perf_K[:][:])
+    L = np.asarray(perf_L[:][:])
+
+    AA = A[:][:].transpose()
+    BB = B[:][:].transpose()
+    CC = C[:][:].transpose()
+    DD = D[:][:].transpose()
+    EE = E[:][:].transpose()
+    FF = F[:][:].transpose()
+    GG = G[:][:].transpose()
+    HH = H[:][:].transpose()
+    II = I[:][:].transpose()
+    JJ = J[:][:].transpose()
+    KK = K[:][:].transpose()
+    LL = L[:][:].transpose()
+
+    return [AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL]
+
+def load_perf_value_saved_Algo_Analysis_2():
+    perf_A = np.load('NPY1\\COM_A.npy')
+    perf_B = np.load('NPY1\\COM_B.npy')
+    perf_C = np.load('NPY1\\COM_C.npy')
+    perf_D = np.load('NPY1\\COM_D.npy')
+    perf_E = np.load('NPY1\\COM_E.npy')
+    perf_F = np.load('NPY1\\COM_F.npy')
+    perf_G = np.load('NPY1\\COM_G.npy')
+    perf_H = np.load('NPY1\\COM_H.npy')
+
+    A = np.asarray(perf_A[:][:])
+    B = np.asarray(perf_B[:][:])
+    C = np.asarray(perf_C[:][:])
+    D = np.asarray(perf_D[:][:])
+    E = np.asarray(perf_E[:][:])
+    F = np.asarray(perf_F[:][:])
+    G = np.asarray(perf_G[:][:])
+    H = np.asarray(perf_H[:][:])
+
+    AA = A[:][:].transpose()
+    BB = B[:][:].transpose()
+    CC = C[:][:].transpose()
+    DD = D[:][:].transpose()
+    EE = E[:][:].transpose()
+    FF = F[:][:].transpose()
+    GG = G[:][:].transpose()
+    HH = H[:][:].transpose()
+    return [AA, BB, CC, DD, EE, FF, GG, HH]
+
+def Main_comp_val_acc_sen_spe_1(AA,BB,CC,DD,EE,FF,GG,HH,II,JJ,KK,LL):
+    VALLL = np.column_stack((AA[0], BB[0], CC[0], DD[0], EE[0], FF[0], GG[0], HH[0], II[0], JJ[0], KK[0], LL[0]))
+    perf1 = VALLL.T
+    # perf1 = vall(perf1)
+    VALLL = np.column_stack((AA[1], BB[1], CC[1], DD[1], EE[1], FF[1], GG[1], HH[1], II[1], JJ[1], KK[1], LL[1]))
+    perf2 = VALLL.T
+    # perf2 = vall(perf2)
+    VALLL = np.column_stack((AA[2], BB[2], CC[2], DD[2], EE[2], FF[2], GG[2], HH[2], II[2], JJ[2], KK[2], LL[2]))
+    perf3 = VALLL.T
+    # perf3 = vall(perf3)
+    VALLL = np.column_stack((AA[3], BB[3], CC[3], DD[3], EE[3], FF[3], GG[3], HH[3], II[3], JJ[3], KK[3], LL[3]))
+    perf4 = VALLL.T
+    # perf4 = vall(perf4)
+    VALLL = np.column_stack((AA[4], BB[4], CC[4], DD[4], EE[4], FF[4], GG[4], HH[4], II[4], JJ[4], KK[4], LL[4]))
+    perf5 = VALLL.T
+    # perf5 = vall(perf5)
+    VALLL = np.column_stack((AA[5], BB[5], CC[5], DD[5], EE[5], FF[5], GG[5], HH[5], II[5], JJ[5], KK[5], LL[5]))
+    perf6 = VALLL.T
+    VALLL = np.column_stack((AA[6], BB[6], CC[6], DD[6], EE[6], FF[6], GG[6], HH[6], II[6], JJ[6], KK[6], LL[6]))
+    perf7 = VALLL.T
+    VALLL = np.column_stack((AA[7], BB[7], CC[7], DD[7], EE[7], FF[7], GG[7], HH[7], II[7], JJ[7], KK[7], LL[7]))
+    perf8 = VALLL.T
+    VALLL = np.column_stack((AA[8], BB[8], CC[8], DD[8], EE[8], FF[8], GG[8], HH[8], II[8], JJ[8], KK[8], LL[8]))
+    perf9 = VALLL.T
+    # perf6 = vall(perf6)
+    # [perf1, perf2, perf3, perf4, perf5, perf6, perf7, perf8, perf9,perf10,perf11,perf12]=perfs(perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9,perf10,perf11,perf12,0)
+    return [perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9]
+
+def Main_comp_val_acc_sen_spe_2(AA,BB,CC,DD,EE,FF,GG,HH):
+    VALLL = np.column_stack((AA[0], BB[0], CC[0], DD[0], EE[0], FF[0], GG[0], HH[0]))
+    perf1 = VALLL.T
+    # perf1 = vall(perf1)
+    VALLL = np.column_stack((AA[1], BB[1], CC[1], DD[1], EE[1], FF[1], GG[1], HH[1]))
+    perf2 = VALLL.T
+    # perf2 = vall(perf2)
+    VALLL = np.column_stack((AA[2], BB[2], CC[2], DD[2], EE[2], FF[2], GG[2], HH[2]))
+    perf3 = VALLL.T
+    # perf3 = vall(perf3)
+    VALLL = np.column_stack((AA[3], BB[3], CC[3], DD[3], EE[3], FF[3], GG[3], HH[3]))
+    perf4 = VALLL.T
+    # perf4 = vall(perf4)
+    VALLL = np.column_stack((AA[4], BB[4], CC[4], DD[4], EE[4], FF[4], GG[4], HH[4]))
+    perf5 = VALLL.T
+    # perf5 = vall(perf5)
+    VALLL = np.column_stack((AA[5], BB[5], CC[5], DD[5], EE[5], FF[5], GG[5], HH[5]))
+    perf6 = VALLL.T
+    VALLL = np.column_stack((AA[6], BB[6], CC[6], DD[6], EE[6], FF[6], GG[6], HH[6]))
+    perf7 = VALLL.T
+    VALLL = np.column_stack((AA[7], BB[7], CC[7], DD[7], EE[7], FF[7], GG[7], HH[7]))
+    perf8 = VALLL.T
+    VALLL = np.column_stack((AA[8], BB[8], CC[8], DD[8], EE[8], FF[8], GG[8], HH[8]))
+    perf9 = VALLL.T
+    # perf6 = vall(perf6)
+    # [perf1, perf2, perf3, perf4, perf5, perf6, perf7, perf8, perf9,perf10,perf11,perf12]=perfs(perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9,perf10,perf11,perf12)
+
+    return [perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9]
+
+def load_perf_parameter1(A, B, C, D, E, F,G,H,I):
+    A=np.sort(A.T).T
+    D = np.sort(D.T).T
+    E = np.sort(E.T).T
+    F = np.sort(F.T).T
+    for i in range(A.shape[0]):
+        A[i,:]=np.sort(A[i,:].T).T
+        D[i, :] = np.sort(D[i, :].T).T
+        E[i, :] = np.sort(E[i, :].T).T
+        F[i, :] = np.sort(F[i, :].T).T
+    perf_A1 = A[[0, 1, 2, 3, 4, 5, 6, 11], :]
+    perf_B1 = F[[0, 1, 2, 3, 4, 5, 6, 11], :]
+    perf_C1 = D[[0, 1, 2, 3, 4, 5, 6, 11], :]
+    perf_D1 = E[[0, 1, 2, 3, 4, 5, 6, 11], :]
+    perf_A2 = A[[7, 8, 9, 10, 11], :]
+    perf_B2 = F[[7, 8, 9, 10, 11], :]
+    perf_C2 = D[[7, 8, 9, 10, 11], :]
+    perf_D2 = E[[7, 8, 9, 10, 11], :]
+    return [perf_A1, perf_B1, perf_C1, perf_D1,perf_A2, perf_B2, perf_C2,perf_D2]
+
+def load_perf_parameter2(A, B, C, D, E, F,G,H,I):
+    A = np.sort(A.T).T
+    D = np.sort(D.T).T
+    E = np.sort(E.T).T
+    F = np.sort(F.T).T
+    for i in range(A.shape[0]):
+        A[i, :] = np.sort(A[i, :].T).T
+        D[i, :] = np.sort(D[i, :].T).T
+        E[i, :] = np.sort(E[i, :].T).T
+        F[i, :] = np.sort(F[i, :].T).T
+    perf_A1 = A
+    perf_B1 = F
+    perf_C1 = D
+    perf_D1 = E
+    return [perf_A1, perf_B1, perf_C1, perf_D1]
+
+def Complete_Figure_perf(perf, val, str_1, xlab, ylab,name):
+    perf = perf * 100
+    a = perf[:, 0]
+    b = perf[:, 1]
+    c = perf[:, 2]
+    d = perf[:, 3]
+    e = perf[:, 4]
+    dict = {'40': a, '50': b, '60': c, '70': d, '80': e}
+    df = pd.DataFrame(dict, index=[str_1])
+    df.to_csv('Results_P1\\TP\\Perf_Analysis\\_' + str(val) + '_' + str(name) +'Graph.csv')
+    df1 = {
+        'No.of.records': ['40', '40', '40', '40', '40',
+                          '50', '50', '50', '50', '50',
+                          '60', '60', '60', '60', '60',
+                          '70', '70', '70', '70', '70',
+                          '80', '80', '80', '80', '80'],
+        'Accuracy(%)': [perf[0, 0], perf[1, 0], perf[2, 0], perf[3, 0], perf[4, 0]
+            , perf[0, 1], perf[1, 1], perf[2, 1], perf[3, 1], perf[4, 1]
+            , perf[0, 2], perf[1, 2], perf[2, 2], perf[3, 2], perf[4, 2]
+            , perf[0, 3], perf[1, 3], perf[2, 3], perf[3, 3], perf[4, 3]
+            , perf[0, 4], perf[1, 4], perf[2, 4], perf[3, 4], perf[4, 4]],
+        'Legend': [str_1[0], str_1[1], str_1[2], str_1[3], str_1[4],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4]]}
+
+    plt.figure()
+    sns.set(font_scale=0.8)
+    sns.set_style("whitegrid")
+    sns.lineplot(x='No.of.records', y='Accuracy(%)', hue='Legend',  marker="d",markersize=10,palette=['#009900','#996600','#cc0000','#4da6ff','#6600ff'],data=df1)
+    plt.legend(loc='lower center', fontsize=15,prop={'weight':'bold'})
+    plt.xlabel(xlab, fontsize=15,weight='bold')
+    plt.ylabel(ylab, fontsize=15,weight='bold')
+    plt.savefig('Results_P1\\TP\\Perf_Analysis\\' + str(val) + '_' + str(name) +'Graph.png', dpi=800)
+    plt.show(block=False)
+    plt.clf()
+
+def Complete_Figure_com_kf(perf, val, str_1, xlab, ylab,name):
+    perf=perf*100
+    a = perf[:, 0]
+    b = perf[:, 1]
+    c = perf[:, 2]
+    d = perf[:, 3]
+    dict = {'4': a, '6': b, '8': c, '10': d}
+    df = pd.DataFrame(dict, index=[str_1])
+    df.to_csv('Results_P1\\KF\\Comp_Analysis\\' + '_' + str(val) + str(name) +'_' + 'Graph.csv')
+    df1 = {
+        'No.of.records': ['4', '4', '4', '4', '4', '4', '4', '4',
+                          '6', '6', '6', '6', '6', '6', '6', '6',
+                          '8', '8', '8', '8', '8', '8', '8', '8',
+                          '10', '10', '10', '10', '10', '10', '10', '10'],
+        'Accuracy(%)': [perf[0, 0], perf[1, 0], perf[2, 0], perf[3, 0], perf[4, 0], perf[5, 0], perf[6, 0], perf[7, 0]
+            , perf[0, 1], perf[1, 1], perf[2, 1], perf[3, 1], perf[4, 1], perf[5, 1], perf[6, 1], perf[7, 1]
+            , perf[0, 2], perf[1, 2], perf[2, 2], perf[3, 2], perf[4, 2], perf[5, 2], perf[6, 2], perf[7, 2]
+            , perf[0, 3], perf[1, 3], perf[2, 3], perf[3, 3], perf[4, 3], perf[5, 3], perf[6, 3], perf[7, 3]],
+        'Legend': [str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],
+                   str_1[0], str_1[1], str_1[2], str_1[3], str_1[4], str_1[5], str_1[6], str_1[7],]}
+
+    plt.figure()
+    sns.set(font_scale=0.8)
+    sns.set_style("whitegrid")
+    sns.barplot(x='No.of.records', y='Accuracy(%)', hue='Legend', palette=['#6600ff','#ff9900','#cc00ff','#99ff33','#1ab2ff','#ff6600','#669900','#cc3300'],data=df1)
+    plt.legend(ncol=2,loc='lower center', fontsize=15,prop={"weight":"bold"})
+    plt.xlabel(xlab, fontsize=15, weight='bold')
+    plt.ylabel(ylab, fontsize=15, weight='bold')
+    plt.savefig('Results_P1\\KF\\Comp_Analysis\\' + str(val) + '_' + str(name) +'Graph.png', dpi=800)
+    plt.show(block=False)
+    plt.clf()
+
+def complete_graph(ii):
+    name = ["Accuracy", "F1-Score","Precision","Recall"]
+    [AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL] = load_perf_value_saved_Algo_Analysis_1()
+    [perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9] = Main_comp_val_acc_sen_spe_1(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL)
+    [perf_A1, perf_B1, perf_C1,perf_D1, perf_A2, perf_B2, perf_C2,perf_D2] = load_perf_parameter1(perf1, perf2, perf3, perf4, perf5,perf6,perf7,perf8,perf9)
+    [AA, BB, CC, DD, EE, FF, GG, HH] = load_perf_value_saved_Algo_Analysis_2()
+    [perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9] = Main_comp_val_acc_sen_spe_2(AA, BB, CC, DD, EE, FF, GG,HH)
+    [perf_A,perf_B,perf_C,perf_D] = load_perf_parameter2(perf1, perf2, perf3, perf4,perf5,perf6,perf7,perf8,perf9)
+
+    legend = ["LSTM", "BiLSTM", "ResNet-CNN", "AAFMCNN", "HA-Explainable CNN", "COA-HA-Explainable CNN","GWO-HA-Explainable CNN","Proposed HA-Explainable CNN"]
+    legend1 = ["Proposed HA-Explainable CNN with Epochs=20","Proposed HA-Explainable CNN with Epochs=40","Proposed HA-Explainable CNN with Epochs=60",
+               "Proposed HA-Explainable CNN with Epochs=80", "Proposed HA-Explainable CNN with Epochs=100"]
+    xlab = "Training Percentage(%)"
+    ylab = name[0]+"(%)"
+    Complete_Figure_com(perf_A1, ii, legend, xlab, ylab, name[0])
+    ii = ii + 1
+    ylab =  name[1]+"(%)"
+    Complete_Figure_com(perf_B1, ii, legend, xlab, ylab, name[1])
+    ii = ii + 1
+    ylab = name[2]+"(%)"
+    Complete_Figure_com(perf_C1, ii, legend, xlab, ylab, name[2])
+    ii = ii + 1
+    ylab =  name[3]+"(%)"
+    Complete_Figure_com(perf_D1, ii, legend, xlab, ylab, name[3])
+    ii = ii + 1
+    ylab =   name[0]+"(%)"
+    Complete_Figure_perf(perf_A2, ii, legend1, xlab, ylab, name[0])
+    ii = ii + 1
+    ylab =  name[1]+"(%)"
+    Complete_Figure_perf(perf_B2, ii, legend1, xlab, ylab, name[1])
+    ii = ii + 1
+    ylab =  name[2]+"(%)"
+    Complete_Figure_perf(perf_C2, ii, legend1, xlab, ylab, name[2])
+    ii = ii + 1
+    ylab =  name[3]+"(%)"
+    Complete_Figure_perf(perf_D2, ii, legend1, xlab, ylab, name[3])
+    ii = ii + 1
+
+    xlab = "K-Fold"
+    ylab =   name[0]+"(%)"
+    Complete_Figure_com_kf(perf_A, ii, legend, xlab, ylab, name[0])
+    ii = ii + 1
+    ylab =  name[1]+"(%)"
+    Complete_Figure_com_kf(perf_B, ii, legend, xlab, ylab, name[1])
+    ii = ii + 1
+    ylab =  name[2]+"(%)"
+    Complete_Figure_com_kf(perf_C, ii, legend, xlab, ylab, name[2])
+    ii = ii + 1
+    ylab =  name[3]+"(%)"
+    Complete_Figure_com_kf(perf_D, ii, legend, xlab, ylab, name[3])
+
+def All_Analysis():
+    print('\33[44m' + '\33[31m' + "[INFO] Loading Features and Labels" + '\x1b[0m')
+    feat = np.load("Final Featres/final_features.npy")
+    lab = np.load("Final Featres/Labels.npy")
+    print('\33[46m' + '\33[30m' + "--------------[INFO] Training Percentage Analysis------------- " + '\x1b[0m')
+    TP_Analysis(feat,lab)
+    print('\33[46m' + '\33[30m' + "-------------[INFO] Cross Validation Analysis-------------- " + '\x1b[0m')
+    # KF_Analysis(feat,lab)
 
 
 
