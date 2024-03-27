@@ -55,9 +55,10 @@ from pytorch_grad_cam import GuidedBackpropReLUModel
 from pytorch_grad_cam.utils.image import (show_cam_on_image, deprocess_image, preprocess_image)
 from torchvision import models
 resnet50_model = models.resnet50(pretrained=True)
-#
+
 
 def Guided_Propagation_Model(rgb_img, CAM_Model=None):
+    print("Guided_Propagation_Model")
     target_layers = [resnet50_model.layer4] ## Base Model
     rgb_img = rgb_img[:, :, ::-1]
     rgb_img = np.float32(rgb_img) / 255
@@ -854,13 +855,26 @@ def CNN_Based_On_ResNet(xtrain, ytrain, xtest, ytest,epochs):
 
     return Y_pred, Y_true
 
+
+def resize_data(data):
+    resized_data = []
+    for img in data:
+        resized_img = cv2.resize(img, (64, 64))
+        resized_img = resized_img.reshape(64, 64, 1)
+        resized_data.append(resized_img)
+    return np.array(resized_data)
+
 #//////////////An Adaptive Attention Fusion Mechanism Convolutional Network
-def Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, ytrain,xtest, ytest,epochs):
+def Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, ytrain, xtest, ytest, epochs):
+    xtrain = xtrain.reshape(xtrain.shape[0], xtrain.shape[1] // 2, 2, 1)
+    xtest = xtest.reshape(xtest.shape[0], xtest.shape[1] // 2, 2, 1)
+
     model = Sequential()
-    model.add(Conv2D(filters=8, kernel_size=(5, 5), padding='Same', activation='relu', input_shape=(64, 64, 1)))
+    model.add(Conv2D(filters=8, kernel_size=(5, 5), padding='Same', activation='relu', input_shape=(xtrain.shape[1:])))
     model.add(MaxPool2D(pool_size=(2, 2)))
     model.add(Dropout(0.25))
-    model.add(Dense(2, activation='softmax'))
+    model.add(Flatten())
+    model.add(Dense(ytrain.shape[1], activation='softmax'))
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
     print('\033[46m' + '\033[30m' + "------------ADAPTIVE_ATTENTION_FUSION_MECHANISM_CNN...____" + '\x1b[0m')
@@ -871,6 +885,7 @@ def Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, ytrain,xtest, ytest,epochs):
     Y_pred = np.argmax(Y_pred, axis=1)
     Y_true = np.argmax(ytest, axis=1)
     return Y_pred, Y_true
+
 
 def position_attention(input_feature, ratio=8):
     # channel_axis = 1 if K.image_data_format() == "channels_first" else -1
@@ -966,6 +981,7 @@ def Hybrid_Attention_Block(w):
     return newweight
 
 def Hybrid_Attention_Module(model):
+    ###it will get thew weights frm module
     weights = model.get_weights()
     weight = weights[0]
     tunedweight = Hybrid_Attention_Block(weight)
@@ -1122,6 +1138,7 @@ def oversample(X_train, y_train):
     return X_resampled, y_resampled
 
 def Explainable(image):
+    print("Explainable CNN")
     image = cv2.cvtColor(np.uint8(image), cv2.COLOR_GRAY2BGR)## convert it into color
     Final = Guided_Propagation_Model(image, CAM_Model=GradCAMPlusPlus) ## GradCam++ alogrithm
     # Reshape Final to have 2154 rows and 3 columns
@@ -1134,6 +1151,7 @@ def Explainable(image):
     return Final
 
 def Explainable_CNN_features(feat,option):
+    print("Explainable CNN")
     if option==True:
         x_feat = []
         for i in range(feat.shape[0]):
@@ -1145,6 +1163,7 @@ def Explainable_CNN_features(feat,option):
     return x_feat
 
 def TP_Analysis(features,labels):
+    print("Explainable CNN")
     features = Explainable_CNN_features(features, False)
     le = LabelEncoder()
 
@@ -1152,10 +1171,11 @@ def TP_Analysis(features,labels):
 
     features, labels = oversample(features, labels)
 
-    epochs = [2, 4, 6, 8, 1]  # No. of Iterations
+    epochs = [20, 40, 60, 80, 100]  # No. of Iterations
+    # epochs = [2, 4, 6, 8, 10, 2]
 
-    # tr = [0.4, 0.5, 0.6, 0.7, 0.8]  # Variation of Training Percentage - takes datasets rom smaller percentage to higher percentage to give the training percentage
-    tr = [0.7, 0.8]
+    tr = [0.4, 0.5, 0.6, 0.7, 0.8]  # Variation of Training Percentage - takes datasets rom smaller percentage to higher percentage to give the training percentage
+    # tr = [0.7, 0.8]
     # 0 - hYBRID attENTION X CNN ,!-COA +   hYBRID attENTION X CNN , 2-GWO +  hYBRID attENTION X CNN,3 - Proposed  hYBRID attENTION X CNN
     options = [0, 1, 2, 3]
 
@@ -1182,10 +1202,10 @@ def TP_Analysis(features,labels):
         y1test = to_categorical(ytest)
 
         print('\033[46m' + '\033[30m' + "------------------------------MODEL TRAINING SECTION---------------------------------------"  + '\x1b[0m')
-        # Y_pred1, Y_true1 = LSTM_Model(xtrain,y1train,xtest,y1test, epochs[4])
-        # Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain,y1train,xtest,y1test, epochs[4])
-        # Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain,y1train,xtest,y1test, epochs[4])
-        # Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain,y1train,xtest,y1test,epochs[4])
+        Y_pred1, Y_true1 = LSTM_Model(xtrain,y1train,xtest,y1test, epochs[0])
+        Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain,y1train,xtest,y1test, epochs[0])
+        Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain,y1train,xtest,y1test, epochs[0])
+        Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain,y1train,xtest,y1test,epochs[0])
         Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],options[0])
         Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4], options[1])
         Y_pred7, Y_true7 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4], options[2])
@@ -1270,8 +1290,8 @@ def  KF_Analysis(feat,lab):
     """An epoch in machine learning means one complete pass of the training dataset through the algorithm.
          This epoch's number is an important hyperparameter for the algorithm. 
          It specifies the number of epochs or complete passes of the entire training dataset passing through the training or learning process of the algorithm"""
-    epochs =[2,3,4,5,1] # No. of Iterations
-    # epochs = [10, 20, 30, 40, 50]
+    # epochs =[2,3,4,5,1] # No. of Iterations
+    epochs = [10, 20, 30, 40, 50]
     """A label represents an output value,
        while a feature is an input value that describes the characteristics of such labels in datasets"""
     features = np.nan_to_num(features, 0)
@@ -1331,10 +1351,10 @@ def  KF_Analysis(feat,lab):
 
                 print("------------------------------MODEL TRAINING SECTION---------------------------------------")
 
-                Y_pred1, Y_true1 = LSTM_Model(xtrain, y1train, xtest, y1test, epochs[4])
-                Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain, y1train, xtest, y1test, epochs[4])
-                Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain, y1train, xtest, y1test, epochs[4])
-                Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, y1train, xtest, y1test, epochs[4])
+                Y_pred1, Y_true1 = LSTM_Model(xtrain, y1train, xtest, y1test, epochs[0])
+                Y_pred2, Y_true2 = Bi_LSTM_MODEL(xtrain, y1train, xtest, y1test, epochs[0])
+                Y_pred3, Y_true3 = CNN_Based_On_ResNet(xtrain, y1train, xtest, y1test, epochs[0])
+                Y_pred4, Y_true4 = Adaptive_Attention_Fusion_Mechanism_CNN(xtrain, y1train, xtest, y1test, epochs[0])
                 Y_pred5, Y_true5 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
                                                                           options[0])
                 Y_pred6, Y_true6 = Hybrid_Attention_Based_Explainable_CNN(xtrain, y1train, xtest, y1test, epochs[4],
@@ -1459,7 +1479,6 @@ def  KF_Analysis(feat,lab):
         [ACC_6, SEN_6, SPE_6, PRE_6, REC_6, FSC_6,CSI_6,FPR_6,FNR_6,MCC_6,PPV_6,NPV_6] = parameter(acc6, sen6, spe6, pre6, rec6, fsc6,csi6,fpr6,fnr6,mcc6,ppv6,npv6)
         [ACC_7, SEN_7, SPE_7, PRE_7, REC_7, FSC_7,CSI_7,FPR_7,FNR_7,MCC_7,PPV_7,NPV_7] = parameter(acc7, sen7, spe7, pre7, rec7, fsc7,csi7,fpr7,fnr7,mcc7,ppv7,npv7)
         [ACC_8, SEN_8, SPE_8, PRE_8, REC_8, FSC_8,CSI_8,FPR_8,FNR_8,MCC_8,PPV_8,NPV_8] = parameter(acc8, sen8, spe8, pre8, rec8, fsc8,csi8,fpr8,fnr8,mcc8,ppv8,npv8)
-
 
         COM_A.append([ACC_1, SEN_1, SPE_1, PRE_1, REC_1, FSC_1,CSI_1,FPR_1,FNR_1,MCC_1,PPV_1,NPV_1])
         COM_B.append([ACC_2, SEN_2, SPE_2, PRE_2, REC_2, FSC_2,CSI_2,FPR_2,FNR_2,MCC_2,PPV_2,NPV_2])
@@ -1645,15 +1664,6 @@ def Main_comp_val_acc_sen_spe_2(AA,BB,CC,DD,EE,FF,GG,HH):
     return [perf1, perf2, perf3, perf4, perf5, perf6,perf7,perf8,perf9]
 
 def load_perf_parameter1(A, B, C, D, E, F,G,H,I):
-    A=np.sort(A.T).T
-    D = np.sort(D.T).T
-    E = np.sort(E.T).T
-    F = np.sort(F.T).T
-    for i in range(A.shape[0]):
-        A[i,:]=np.sort(A[i,:].T).T
-        D[i, :] = np.sort(D[i, :].T).T
-        E[i, :] = np.sort(E[i, :].T).T
-        F[i, :] = np.sort(F[i, :].T).T
     perf_A1 = A[[0, 1, 2, 3, 4, 5, 6, 11], :]
     perf_B1 = F[[0, 1, 2, 3, 4, 5, 6, 11], :]
     perf_C1 = D[[0, 1, 2, 3, 4, 5, 6, 11], :]
@@ -1665,15 +1675,6 @@ def load_perf_parameter1(A, B, C, D, E, F,G,H,I):
     return [perf_A1, perf_B1, perf_C1, perf_D1,perf_A2, perf_B2, perf_C2,perf_D2]
 
 def load_perf_parameter2(A, B, C, D, E, F,G,H,I):
-    A = np.sort(A.T).T
-    D = np.sort(D.T).T
-    E = np.sort(E.T).T
-    F = np.sort(F.T).T
-    for i in range(A.shape[0]):
-        A[i, :] = np.sort(A[i, :].T).T
-        D[i, :] = np.sort(D[i, :].T).T
-        E[i, :] = np.sort(E[i, :].T).T
-        F[i, :] = np.sort(F[i, :].T).T
     perf_A1 = A
     perf_B1 = F
     perf_C1 = D
@@ -1805,12 +1806,17 @@ def complete_graph(ii):
 
 def All_Analysis():
     print('\33[44m' + '\33[31m' + "[INFO] Loading Features and Labels" + '\x1b[0m')
-    feat = np.load("Final Featres/final_features.npy")
+    feat = np.load("Final Featres/final_features.npy")[:100]
     lab = np.load("Final Featres/Labels.npy")
     print('\33[46m' + '\33[30m' + "--------------[INFO] Training Percentage Analysis------------- " + '\x1b[0m')
     TP_Analysis(feat,lab)
     print('\33[46m' + '\33[30m' + "-------------[INFO] Cross Validation Analysis-------------- " + '\x1b[0m')
-    # KF_Analysis(feat,lab)
+    KF_Analysis(feat,lab)
+
+
+
+
+
 
 
 
