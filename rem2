@@ -1,22 +1,50 @@
+def count_occurnce(lst, x):
+    count = 0
 
-for image in image_files:
-    filename = os.path.basename(image)
-    all_indexes = np.where(df['image_id'] == filename)[0]
+    for ele in lst:
+        if (ele == x):
 
-    img = cv2.imread(image)
-    cnt = 0
-    for crd in all_indexes:
-        coordinates = df['bounds'][all_indexes[0]]
-        xB = coordinates[2]
-        xA = coordinates[0]
-        yB = coordinates[3]
-        yA = coordinates[1]
-        cv2.rectangle(img, (xA, yA), (xB, yB), (0, 0, 255), 2)  # Draw a rectangle on the image
-        # print("x,y,w,h:", x, y, w, h)
-        filename = 'Datasets\\Frames\\detectedimg__' + str(cnt) + '.png'
-        cnt+=1
-    cv2.imwrite(filename, img)
+            count = count + 1
+    return count
+
+# Step 1: Load the CSV file into a DataFrame
+def oversample(X_train, y_train):
+    count_0 = count_occurnce(y_train,y_train.min())
+    count_1 = count_occurnce(y_train,y_train.max())
+
+    # one = []
+    # zero = []
+    # for i in y_train:
+    #     if i == y_train.min():
+    #         zero.append(i)
+    #     if i ==  y_train.max():
+    #         one.append(i)
+    # one_array = np.array(one)
+    # zero_array = np.array(zero)
+
+    if count_0 < count_1:
+        oversample_amount = count_1 - count_0
+        minority_class = y_train.min()
+    elif count_1 < count_0:
+        oversample_amount = count_0 - count_1
+        minority_class = y_train.max()
+    else:
+        return X_train, y_train
+
+    # combined_array = np.concatenate((one_array, zero_array))
+    # print(combined_array)
+
+    smote = SMOTE(sampling_strategy={minority_class: oversample_amount})
+    X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+
+    # Get indices of the oversampled minority class
+    minority_indices = np.where(y_resampled == minority_class)[0]
+    first_index = minority_indices[0]
+    print(first_index)
+    last_index = minority_indices[-1]
+    print(last_index)
+    # Select corresponding features from X_train
+    corresponding_features = X_resampled[first_index:last_index+1]
 
 
-
-
+    return corresponding_features, y_train
