@@ -24,9 +24,11 @@ def oversample(X_train, y_train):
 
     if count_0 < count_1:
         oversample_amount = count_1 - count_0
+        oversample_amount = oversample_amount+count_0
         minority_class = y_train.min()
     elif count_1 < count_0:
         oversample_amount = count_0 - count_1
+        oversample_amount = oversample_amount + count_1
         minority_class = y_train.max()
     else:
         return X_train, y_train
@@ -34,10 +36,11 @@ def oversample(X_train, y_train):
     # combined_array = np.concatenate((one_array, zero_array))
     # print(combined_array)
 
+
     smote = SMOTE(sampling_strategy={minority_class: oversample_amount})
     X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
 
-    # Get indices of the oversampled minority class
+    # Get indices of the oversampled minority class1
     minority_indices = np.where(y_resampled == minority_class)[0]
     first_index = minority_indices[0]
     print(first_index)
