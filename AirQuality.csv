@@ -1,121 +1,524 @@
-import numpy as np
-import pandas as pd# evaluate model performance with outliers removed using isolation forest
+from __future__ import absolute_import
+from glob import glob
+import cv2
+import nibabel as nib
+from keras import backend as K, Input
+# from  mealpy1.music_based.SSE import dB
 from imblearn.over_sampling import SMOTE
-from pandas import read_csv
-
-from sklearn.ensemble import IsolationForest
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+from keras import Model
+from keras.applications import ResNet101, EfficientNetB7
+from keras.initializers.initializers_v1 import RandomNormal
+from keras.optimizers import Adam
+from matplotlib import pyplot as plt, gridspec
+from numpy import zeros, ones, load
+from skimage.util import montage
+from skimage.transform import rotate
+from termcolor import colored
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.linear_model import LinearRegression
+from keras.models import Sequential
+from keras.layers import Dense, Conv2D, MaxPool2D, Flatten, Dropout, BatchNormalization, Activation, Reshape, \
+    GlobalAveragePooling2D, GlobalMaxPooling2D, Add, multiply, Lambda, Conv2DTranspose, Concatenate, LeakyReLU, \
+    AveragePooling2D, Multiply, MaxPooling2D
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
+#
+# TRAIN_DATASET_PATH = 'Datasets/MICCAI_BraTS_2019_Data_Training/Datasets/HGG/'
+# #VALIDATION_DATASET_PATH = '../input/d/debobratachakraborty/brats2019-dataset/MICCAI_BraTS_2019_Data_Training/'
+#
+# test_image_flair=nib.load(TRAIN_DATASET_PATH + 'BraTS19_2013_10_1/BraTS19_2013_10_1_flair.nii').get_fdata()
+# test_image_t1=nib.load(TRAIN_DATASET_PATH + 'BraTS19_2013_10_1/BraTS19_2013_10_1_t1.nii').get_fdata()
+#
+# test_image_t1ce=nib.load(TRAIN_DATASET_PATH + 'BraTS19_2013_10_1/BraTS19_2013_10_1_t1ce.nii').get_fdata()
+# test_image_t2=nib.load(TRAIN_DATASET_PATH + 'BraTS19_2013_10_1/BraTS19_2013_10_1_t2.nii').get_fdata()
+# test_mask=nib.load(TRAIN_DATASET_PATH + 'BraTS19_2013_10_1/BraTS19_2013_10_1_seg.nii').get_fdata()
 
-# read the CSV file into a DataFrame
-
-# load the dataset
+DATASET_PATH ="Datasets/MICCAI_BraTS_2019_Data_Training/Datasets/HGG/"
 
 
-# # Health = pd.read_csv("Datasets/Life_Expectancy_Data.csv")
-# def coloumn_values_to_integer(features):
-#     label_encoder = LabelEncoder()
-#     for column in features.columns:
-#         if features[column].dtype == 'object':
-#             try:
-#                 features[column] = label_encoder.fit_transform(features[column])
-#             except:
-#                 features[column] = label_encoder.fit_transform(features[column].astype("str"))
-#     return features
-# def outlier(features):
-#
-#     iso = IsolationForest(contamination=0.1)
-#     yhat = iso.fit_predict(features)
-#     unique_values, counts = np.unique(yhat, return_counts=True)
-#     outlier_ind = np.max(yhat)
-#     features['Outlier_Label'] = yhat
-#     features = features[yhat == outlier_ind]
-#     return features
-# def traffic_data_preprocess():
-#
-#     traffic_data = pd.read_csv("New Folder/traffic.csv")
-#     traffic_data.head()
-#
-#     traffic_data['DateTime']=pd.to_datetime(traffic_data['DateTime'])
-#
-#     traffic_data["Year"]=traffic_data['DateTime'].dt.year
-#
-#     traffic_data["Month"]=traffic_data['DateTime'].dt.month
-#
-#     traffic_data["Date_no"]=traffic_data['DateTime'].dt.day
-#
-#     traffic_data["Hour"]=traffic_data['DateTime'].dt.hour
-#
-#     traffic_data["Day"]= traffic_data['DateTime'].dt.strftime("%A")
-#
-#     traffic_data.drop("DateTime", axis=1, inplace=True)
-#
-#
-#     traffic_data.dropna()
-#     traffic_data.drop_duplicates()
-#
-#
-#     features = coloumn_values_to_integer(traffic_data)
-#     features =outlier(features)
-#     features = features.drop(columns=['Outlier_Label'])
-#
-#     labels = features['Vehicles']
-#
-#
-#     return features,labels
-#
-# features,labels = traffic_data_preprocess()
-# xtrain, xtest, ytrain, ytest= train_test_split(features, labels, test_size=0.33, random_state=42)
-#
-# print()
+def TestImageOutput():
 
-#Air
-df = pd.read_csv("New Folder/AirQuality.csv", sep=";", decimal=",")
-sns.heatmap(df.isna(),yticklabels=False,cmap='crest')
-plt.show()
+    test_image1_flair = nib.load(DATASET_PATH + 'BraTS19_2013_2_1/BraTS19_2013_2_1_flair.nii').get_fdata()
+    test_image1_t1 = nib.load(DATASET_PATH + 'BraTS19_2013_2_1/BraTS19_2013_2_1_t1.nii').get_fdata()
+    test_image1_t1ce = nib.load(DATASET_PATH + 'BraTS19_2013_2_1/BraTS19_2013_2_1_seg.nii').get_fdata()
+    test_image1_t2 = nib.load(DATASET_PATH + 'BraTS19_2013_2_1/BraTS19_2013_2_1_t1ce.nii').get_fdata()
+    test_mask1 = nib.load(DATASET_PATH + 'BraTS19_2013_2_1/BraTS19_2013_2_1_t2.nii').get_fdata()
+    fig, ((ax1, ax2, ax3, ax4, ax5), (ax6, ax7, ax8, ax9, ax10), (ax11, ax12, ax13, ax14, ax15)) = plt.subplots(3, 5, figsize=(20, 10))
+    slice_w = 25
+    ax1.imshow(test_image1_flair[:, :, test_image1_flair.shape[0] // 2 - slice_w], cmap='gray')
+    ax1.axis("off")
+    ax1.set_title('Image flair')
+    ax2.imshow(test_image1_t1[:, :, test_image1_t1.shape[0] // 2 - slice_w], cmap='gray')
+    ax2.axis("off")
+    ax2.set_title('Image t1')
+    ax3.imshow(test_image1_t1ce[:, :, test_image1_t1ce.shape[0] // 2 - slice_w], cmap='gray')
+    ax3.axis("off")
+    ax3.set_title('Image t1ce')
+    ax4.imshow(test_image1_t2[:, :, test_image1_t2.shape[0] // 2 - slice_w], cmap='gray')
+    ax4.axis("off")
+    ax4.set_title('Image t2')
+    ax5.imshow(test_mask1[:, :, test_mask1.shape[0] // 2 - slice_w])
+    ax5.axis("off")
+    ax5.set_title('Mask')
+    plt.savefig("ImageResults\\ActualImages.png", dpi=800)
+    plt.show()
+    plt.clf()
+    # Skip 50:-50 slices since there is not much to see
+    fig, ax1 = plt.subplots(1, 1, figsize=(15, 15))
+    ax1.imshow(rotate(montage(test_image1_t1[50:-50, :, :]), 90, resize=True), cmap='gray')
+    plt.axis("off")
+    plt.savefig("ImageResults\\FullSlices.png", dpi=800)
+    plt.show()
+    plt.clf()
+    # Skip 50:-50 slices since there is not much to see
+    fig, ax1 = plt.subplots(1, 1, figsize=(15, 15))
+    ax1.imshow(rotate(montage(test_mask1[60:-60, :, :]), 90, resize=True), cmap='gray')
+    plt.axis("off")
+    plt.savefig("ImageResults\\FullSlices_segmented.png", dpi=800)
+    plt.show()
+
+# TestImageOutput()
 
 
 
 
+def preprocessg():
+        ## Read the Brats_2019 Dataset
+    dataset = glob("Datasets/MICCAI_BraTS_2019_Data_Training/HGG"+"/**")
 
-print()
+    features = []
+    labels = []
+    Maskimages = []
+    for i in range(10):
+        ### Read all files inside the folder
+        all_files = glob(dataset[i] + "/*.nii")
+
+        ### from the list select flair and seg files
+        flair_file = all_files[0]
+        seg_file = all_files[1]
+
+        ### Read nii file using the builtin function nibabel
+        image = nib.load(flair_file).get_fdata()
+        ### Read Ground Truth image
+        gt=nib.load(seg_file).get_fdata()
+        #### There may be 155 slices within we will take the ranges of 50 to 110
+        for ii in range(50,110):
+            #### image slices
+            img = image[:, :, ii]
+            ###  Mask slices
+            msk = gt[:,:,ii]
+            Maskimages.append(msk)
+            ### Get the label
+            values = np.unique(msk)
+            if values.any() >0:
+                lab = max(values)
+                if lab == 4:
+                    lab = 3
+                labels.append(lab)
+                # Append segmentation mask instead of resized image
+                features.append(msk)
+                # # DEFINE seg-areas
+                # SEGMENT_CLASSES = {
+                #     0 : 'NOT tumor',
+                #     1 : 'NECROTIC/CORE', # or NON-ENHANCING tumor CORE
+                #     2 : 'EDEMA',
+                #     3 : 'ENHANCING' # original 4 -> converted into 3 later
+                # }
+
+            else:
+                labels.append(0) # Non Tumor Labels
+                features.append(img)
+
+    np.save ("Features and labels/Maskimages.npy",Maskimages)
+    np.save("Features and labels/features.npy", features)
+    np.save("Features and labels/labels.npy", labels)
+
+    return features,labels,Maskimages
+
+#hybrid GAN
+import tensorflow as tf
+from tensorflow.keras.layers import Conv2D, BatchNormalization, Activation, AveragePooling2D
+from tensorflow.keras.initializers import RandomNormal
+
+# Define your placeholders or input tensors
+X = tf.keras.Input(shape=(32, 32, 256))
+
+
+def BAM(inputs, reduction_ratio=16, dilation_value=4, scope='BAM'):
+    with tf.name_scope(scope):
+        input_channel = inputs.shape[-1]
+        num_squeeze = input_channel // reduction_ratio
+
+        # Channel attention
+        gap = tf.reduce_mean(inputs, axis=[1, 2], keepdims=True)
+        channel = tf.keras.layers.Dense(num_squeeze, activation='relu')(gap)
+        channel = tf.keras.layers.Dense(input_channel, activation='sigmoid')(channel)
+
+        # Spatial attention
+        spatial = Conv2D(num_squeeze, 1, padding='same', activation='relu')(inputs)
+        spatial = Conv2D(num_squeeze, 3, padding='same', activation='relu', dilation_rate=dilation_value)(spatial)
+        spatial = Conv2D(1, 1, padding='same', activation='sigmoid')(spatial)
+
+        # Combined attention
+        combined = tf.keras.layers.Multiply()([channel, spatial])
+        output = tf.keras.layers.Add()([inputs, tf.keras.layers.Multiply()([inputs, combined])])
+
+        return output
+
+
+# from tensorflow.keras.layers import Conv2D, BatchNormalization, Activation
+
+from tensorflow.keras.layers import Conv2D, BatchNormalization, Activation
+
+class SPEM():
+    def __init__(self, X, num_classes=1000, info="normal"):
+        super(SPEM, self).__init__()
+        block = BAM(X)
+
+        self.inplanes = 16
+        self.conv1 = Conv2D(filters=16, kernel_size=(3, 3), padding="same")
+        self.bn1 = BatchNormalization()
+        self.relu = Activation("relu")
+
+        # Define layers for your network
+        self.layer1 = self._make_layer(block, 16)
+        self.layer2 = self._make_layer(block, 32)
+        self.layer3 = self._make_layer(block, 64)
+
+        self.avgpool = AveragePooling2D(pool_size=(2, 2))
+        self.fc = Activation("relu")
+
+    def _make_layer(self, block, planes):
+        x = Conv2D(planes, 1)(block)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)  # Add activation function after batch normalization
+        return x  # Return the output tensor of the layer, not the layer itself
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)  # Apply activation function after batch normalization
+
+        # Apply the defined layers
+        layer1_out = self._make_layer(x, 16)  # Example, you may need to adjust this line based on your implementation
+        layer2_out = self._make_layer(layer1_out,32)  # Example, you may need to adjust this line based on your implementation
+
+        layer3_out = self._make_layer(layer2_out, 64)
+
+        x = self.avgpool(layer3_out)
+        x = Flatten()(x)  # Use Flatten directly
+        x = self.fc(x)
+        return x
+
+
+
+# preprocessg()
+# define the discriminator model
+def define_discriminator(image_shape):
+    # weight initialization
+    init = RandomNormal(stddev=0.02)
+    # source image input
+    in_src_image = Input(shape=image_shape)
+    # target image input
+    in_target_image = Input(shape=image_shape)
+    # concatenate images channel-wise
+    merged = Concatenate()([in_src_image, in_target_image])
+    # C64
+    d = Conv2D(64, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(merged)
+    d = LeakyReLU(alpha=0.2)(d)
+    # C128
+    d = Conv2D(128, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
+    d = BatchNormalization()(d)
+    d = LeakyReLU(alpha=0.2)(d)
+    # C256
+    d = Conv2D(256, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
+    d = BatchNormalization()(d)
+    d = LeakyReLU(alpha=0.2)(d)
+    # C512
+    d = Conv2D(512, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d)
+    d = BatchNormalization()(d)
+    d = LeakyReLU(alpha=0.2)(d)
+    # second last output layer
+    d = Conv2D(512, (4, 4), padding='same', kernel_initializer=init)(d)
+    d = BatchNormalization()(d)
+    d = LeakyReLU(alpha=0.2)(d)
+    # patch output
+    d = Conv2D(1, (4, 4), padding='same', kernel_initializer=init)(d)
+    patch_out = Activation('sigmoid')(d)
+    # define model
+    model = Model([in_src_image, in_target_image], patch_out)
+    # compile model
+    opt = Adam(lr=0.0002, beta_1=0.5)
+    model.compile(loss='binary_crossentropy', optimizer=opt, loss_weights=[0.5])
+    return model
+
+import tensorflow as tf
+# from tensorflow.keras.layers import AveragePooling2D, MaxPooling2D, Concatenate, Conv2D, Activation, Multiply
+
+import tensorflow as tf
+
+
+class SpatialAttention(tf.keras.layers.Layer):
+    def __init__(self, in_channels):
+        super(SpatialAttention, self).__init__()
+        self.avg_pool = tf.keras.layers.AveragePooling2D(pool_size=(1, 1))
+        self.max_pool = tf.keras.layers.MaxPooling2D(pool_size=(1, 1))
+        self.conv = tf.keras.layers.Conv2D(1, (7, 7), padding='same')
+        self.sigmoid = tf.keras.layers.Activation('sigmoid')
+        self.in_channels = in_channels  # Store in_channels as an attribute
+
+    def call(self, inputs):
+        # Get the height and width of the input tensor
+        height = 32
+        width = 32
+
+        # Reshape the input tensor to have 4 dimensions
+        inputs_reshaped = tf.reshape(inputs, [-1, height, width, self.in_channels])
+
+        avg_out = self.avg_pool(inputs_reshaped)
+        max_out = self.max_pool(inputs_reshaped)
+        concat_out = tf.keras.layers.Concatenate(axis=-1)([avg_out, max_out])
+        spatial_attention = self.conv(concat_out)
+        spatial_attention = self.sigmoid(spatial_attention)
+        out = tf.keras.layers.Multiply()([inputs_reshaped, spatial_attention])
+
+        return out
+
+
+
+# define an encoder block
+
+def encoder_block(layer_in, n_filters, batchnorm=True):
+    # Weight initialization
+    init = RandomNormal(stddev=0.02)
+    # Convolutional layer
+    g = Conv2D(n_filters, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(layer_in)
+    # Conditionally add batch normalization
+    if batchnorm:
+        g = BatchNormalization()(g, training=True)
+    # Leaky ReLU activation
+    g = LeakyReLU(alpha=0.2)(g)
+
+    # Pass through SPEM module
+    g = SPEM(X).forward(g)
+
+    # Apply SpatialAttention - Please provide the correct input channels
+
+    spatial_attention_output = SpatialAttention(in_channels=g.shape[-1])(g)
+
+
+    return spatial_attention_output
+
+# define a decoder block
+def decoder_block(layer_in, skip_in, n_filters, dropout=True):
+    # weight initialization
+    init = RandomNormal(stddev=0.02)
+    # add up sampling layer
+    g = Conv2DTranspose(n_filters, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(layer_in)
+    # add batch normalization
+    g = BatchNormalization()(g, training=True)
+    # conditionally add dropout
+    if dropout:
+        g = Dropout(0.5)(g, training=True)
+    # merge with skip connection
+    g = Concatenate()([g, skip_in])
+    # relu activation
+    g = Activation('relu')(g)
+    return g
+
+
+# define the standalone generator model
+def define_generator(image_shape=(256, 256, 3)):
+    # weight initialization
+    init = RandomNormal(stddev=0.02)
+    # image input
+    in_image = Input(shape=image_shape)
+    # encoder model
+    e1 = encoder_block(in_image, 64, batchnorm=False)
+    e2 = encoder_block(e1, 128)
+    e3 = encoder_block(e2, 256)
+    e4 = encoder_block(e3, 512)
+    e5 = encoder_block(e4, 512)
+    e6 = encoder_block(e5, 512)
+    e7 = encoder_block(e6, 512)
+    # bottleneck, no batch norm and relu
+    b = Conv2D(512, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(e7)
+    b = Activation('relu')(b)
+    # decoder model
+    d1 = decoder_block(b, e7, 512)
+    d2 = decoder_block(d1, e6, 512)
+    d3 = decoder_block(d2, e5, 512)
+    d4 = decoder_block(d3, e4, 512, dropout=False)
+    d5 = decoder_block(d4, e3, 256, dropout=False)
+    d6 = decoder_block(d5, e2, 128, dropout=False)
+    d7 = decoder_block(d6, e1, 64, dropout=False)
+    # output
+    g = Conv2DTranspose(3, (4, 4), strides=(2, 2), padding='same', kernel_initializer=init)(d7)
+    out_image = Activation('tanh')(g)
+    # define model
+    model = Model(in_image, out_image)
+    return model
+
+
+# define the combined generator and discriminator model, for updating the generator
+def define_gan(g_model, d_model, image_shape):
+    # make weights in the discriminator not trainable
+    for layer in d_model.layers:
+        if not isinstance(layer, BatchNormalization):
+            layer.trainable = False
+    # define the source image
+    in_src = Input(shape=image_shape)
+    # connect the source image to the generator input
+    gen_out = g_model(in_src)
+    # connect the source input and generator output to the discriminator input
+    dis_out = d_model([in_src, gen_out])
+    # src image as input, generated image and classification output
+    model = Model(in_src, [dis_out, gen_out])
+    # compile model
+    opt = Adam(lr=0.0002, beta_1=0.5)
+    model.compile(loss=['binary_crossentropy', 'mae'], optimizer=opt, loss_weights=[1, 100])
+    return model
+
+
+# load and prepare training images
+def load_real_samples(filename):
+    # load compressed arrays
+    data = load(filename)
+
+    # unpack arrays
+    X1, X2 = data['array1'], data['array2']
+    # scale from [0,255] to [-1,1]
+    X1 = (X1 - 127.5) / 127.5
+    X2 = (X2 - 127.5) / 127.5
+    return [X1, X2]
+
+
+# select a batch of random samples, returns images and target
+def generate_real_samples(dataset, n_samples, patch_shape):
+    # unpack dataset
+    trainA, trainB = dataset
+    # choose random instances
+    ix = np.random.choice(trainA.shape[0], n_samples)
+
+    # retrieve selected images
+    X1, X2 = trainA[ix], trainB[ix]
+    # generate 'real' class labels (1)
+    y = ones((n_samples, patch_shape, patch_shape, 1))
+    return [X1, X2], y
+
+
+# generate a batch of images, returns images and targets
+def generate_fake_samples(g_model, samples, patch_shape):
+    # generate fake instance
+    X = g_model.predict(samples)
+    # create 'fake' class labels (0)
+    y = zeros((len(X), patch_shape, patch_shape, 1))
+    return X, y
+
+
+def summarize_performance(step, g_model, dataset, n_samples=3):
+    # select a sample of input images
+    [X_realA, X_realB], _ = generate_real_samples(dataset, n_samples, 1)
+    # generate a batch of fake samples
+    X_fakeB, _ = generate_fake_samples(g_model, X_realA, 1)
+    # scale all pixels from [-1,1] to [0,1]
+    X_realA = (X_realA + 1) / 2.0
+    X_realB = (X_realB + 1) / 2.0
+    X_fakeB = (X_fakeB + 1) / 2.0
+
+    seg = X_realB[1]
+    return seg
+
+
+def train(d_model, g_model, gan_model, dataset):
+    n_epochs = 5
+    n_batch = 1
+    # determine the output square shape of the discriminator
+    n_patch = d_model.output_shape[1]
+    # unpack dataset
+    trainA, trainB = dataset
+    n_steps = n_epochs
+    # manually enumerate epochs
+    for i in range(n_steps):
+        [X_realA, X_realB], y_real = generate_real_samples(dataset, n_batch, n_patch)
+        # generate a batch of fake samples
+        X_fakeB, y_fake = generate_fake_samples(g_model, X_realA, n_patch)
+        # update discriminator for real samples
+        d_loss1 = d_model.train_on_batch([X_realA, X_realB], y_real)
+        # update discriminator for generated samples
+        d_loss2 = d_model.train_on_batch([X_realA, X_fakeB], y_fake)
+        # update the generator
+        g_loss, _, _ = gan_model.train_on_batch(X_realA, [y_real, X_realB])
+        # summarize performance
+        print('>%d, d1[%.3f] d2[%.3f] g[%.3f]' % (i + 1, d_loss1, d_loss2, g_loss))
+    out = summarize_performance(n_steps, g_model, dataset)
+    return out
+
+
+def GAN():
+
+    img = np.load("Features and labels/features.npy")[:200]
+    masks = np.load("Features and labels/Maskimages.npy")[:200]
+    seg = []
+    for i in range(len(img)):
+
+        X1 = cv2.resize(img[i], (256, 256))
+        X2 = cv2.resize(masks[i], (256, 256))
+        # X1 = X1.reshape(1, 256, 256, 1)  # Assuming grayscale images
+        # X2 = X2.reshape(1, 256, 256, 1)
+
+        # Assuming X1 and X2 are grayscale images with shapes (1, 256, 256)
+        X1 = np.expand_dims(X1, axis=-1)  # Add an extra dimension for the channel
+        X1 = np.repeat(X1, 3, axis=-1)
+
+        X2 = np.expand_dims(X2, axis=-1)  # Add an extra dimension for the channel
+        X2 = np.repeat(X2, 3,axis =-1)  # Repeat the single channel to create three channels (RGB)
+
+        # Now, the shapes of X1 and X2 will be (1, 256, 256, 3)
+        X1 = X1.reshape(1, X1.shape[0],X1.shape[1],X1.shape[2])
+        X2 = X2.reshape(1, X2.shape[0], X2.shape[1],X2.shape[2])
+
+        dataset = [X1, X2]
+        image_shape = dataset[0].shape[1:]
+        # define Discriminator
+        d_model = define_discriminator(image_shape)
+        # define Generator(with hybrid attention module)
+        g_model = define_generator(image_shape)
+        # define the composite model
+        gan_model = define_gan(g_model, d_model, image_shape)
+        # train model
+        out = train(d_model, g_model, gan_model, dataset)
+        # plt.imshow(out)
+
+        cv2.imwrite('Segmented images \\seg' + str(i) + '.jpg', out)
+        seg.append(seg)
+
+    seg1 = np.array(seg)
+    np.save("GAN_Segmented_Images.npy", seg)
+    return seg1
+GAN()
 
 
 
 
+def EfficientNetB7_FlowMap(img):
+    # Load the EfficientNetB7 model with pre-trained weights
+    model = EfficientNetB7(include_top=False, weights='imagenet')
 
+    # Extract features from the second last layer of EfficientNetB7
+    features_model = Model(inputs=model.inputs, outputs=model.layers[-2].output)
 
+    # Resize the input image to the required size for EfficientNetB7
+    image = cv2.resize(img, (600, 600))
 
-# #air quality
-# df = pd.read_csv("Datasets/AirQuality.csv",sep=";", decimal=",")
-# # Remove unnecessary columns
-# df = df.drop(['Unnamed: 15','Unnamed: 16'], axis = 1)
-# df.isnull().sum()
-# df = df.dropna()
-# df = df.duplicated().sum()
-# print()
-#
-# #Health
-# df1 = pd.read_csv("Datasets/Life_Expectancy_Data.csv")
-# df1.info()
-# df1.columns
-# df1.describe()
-# df1.isnull().any()
-# df1.isnull().sum()
-# df1.duplicated().any()
-# print()
+    # Preprocess the image according to EfficientNetB7 requirements
+    image = EfficientNetB7.preprocess_input(image)
+    # Reshape the image for model prediction
+    image = image.reshape(1, image.shape[0], image.shape[1], image.shape[2])
+    # Extract features using EfficientNetB7 model
+    features = features_model.predict(image)
+    return features
+
+# Example usage:
+img = cv2.imread('your_image.jpg')  # Load your input image here
+features = EfficientNetB7_FlowMap(img)
+print(features.shape)
 
