@@ -1,0 +1,35 @@
+def crop_airplanes1(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Apply thresholding to create a binary image
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+
+    # Find contours in the binary image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    airplanes = []
+    for contour in contours:
+        # Get the bounding box of the contour
+        x, y, w, h = cv2.boundingRect(contour)
+
+        # Ensure the bounding box is not too small
+        if w > 50 and h > 50:  # Adjust these thresholds as needed
+            # Crop the airplane from the image
+            airplane_img = img[y:y + h, x:x + w]
+            airplanes.append(airplane_img)
+
+        # Calculate the average intensity of each cropped image
+    avg_intensities = [np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)) for img in airplanes]
+
+    # Choose the target intensity (you can adjust this value as needed)
+    target_intensity = 120  # For example
+
+    # Find the index of the image with the closest average intensity to the target intensity
+    best_index = np.argmin([abs(avg_intensity - target_intensity) for avg_intensity in avg_intensities])
+
+    # Display the best cropped image
+    best_cropped_airplane = airplanes[best_index]
+    cv2.imshow('Best Cropped Image', best_cropped_airplane)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return best_cropped_airplane
