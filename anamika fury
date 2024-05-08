@@ -1,0 +1,656 @@
+import math
+import os
+import subprocess
+from glob import glob
+
+
+import cv2
+import matplotlib.pyplot as plt
+
+import torchvision
+from keras.layers import BatchNormalization, Dropout, Flatten, Dense, Activation, MaxPooling2D, Conv2D, LSTM, \
+    GlobalAveragePooling2D, MaxPool2D, multiply, Add, GlobalMaxPooling2D, Reshape,Lambda
+from torchvision.transforms import transforms
+
+# from torch import T
+
+from models import tf
+
+# variables
+# distance from camera to object(face) measured
+Known_distance = 30  # Inches
+# mine is 14.3 something, measure your face width, are google it
+Known_width = 5.7  # Inches
+
+# Colors  >>> BGR Format(BLUE, GREEN, RED)
+GREEN = (0, 255, 0)
+RED = (0, 0, 255)
+BLACK = (0, 0, 0)
+YELLOW = (0, 255, 255)
+WHITE = (255, 255, 255)
+CYAN = (255, 255, 0)
+MAGENTA = (255, 0, 242)
+GOLDEN = (32, 218, 165)
+LIGHT_BLUE = (255, 9, 2)
+PURPLE = (128, 0, 128)
+CHOCOLATE = (30, 105, 210)
+PINK = (147, 20, 255)
+ORANGE = (0, 69, 255)
+
+fonts = cv2.FONT_HERSHEY_COMPLEX
+fonts2 = cv2.FONT_HERSHEY_SCRIPT_SIMPLEX
+fonts3 = cv2.FONT_HERSHEY_COMPLEX_SMALL
+fonts4 = cv2.FONT_HERSHEY_TRIPLEX
+# Camera Object
+cap1 = cv2.VideoCapture(0)  # Number According to your Camera
+Distance_level = 0
+import cv2
+
+import numpy as np
+
+
+# Get list of video files in the directory
+# vids = glob("Datasets/new/*.*")[0]
+
+# Iterate through each video file
+# for idx, video_path in enumerate(vids):
+    # Capture frames from the video file
+# cap = cv2.VideoCapture(vids)
+
+# Iterate through each frame
+# frame_count = 0
+# while (cap.isOpened()):
+#     ret, frame = cap.read()
+#     if ret == False:
+#         break
+#     denoised_image = cv2.GaussianBlur(frame, (5, 5), 0)
+#     # gray_image = cv2.cvtColor(denoised_image, cv2.COLOR_BGR2GRAY)
+#     # equalized_image = cv2.equalizeHist(gray_image)
+#     # Save the frame as an image directly into the existing "Frames" folder
+#     cv2.imwrite(os.path.join("Frames2", f'frame_{frame_count}.jpg'), denoised_image)
+#     frame_count += 1
+#
+# # Release the capture
+# cap.release()
+
+import sys
+import torch
+from pathlib import Path
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[0]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+ROOT = Path(os.path.relpath(ROOT, Path.cwd()))
+from models.common import DetectMultiBackend
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages
+from utils.general import (Profile, check_img_size, non_max_suppression, scale_boxes)
+from utils.plots import Annotator, colors
+from utils.torch_utils import select_device, smart_inference_mode
+import warnings
+warnings.filterwarnings("ignore",category=RuntimeWarning)
+weights = 'yolov5s.pt'
+data = ROOT / 'data/coco128.yaml'
+imgsize = (640, 640)
+conf_thres = 0.25
+iou_thres = 0.45
+max_det = 1000
+device = ''
+save_crop = False
+classes = None
+agnostic_nms = False
+augment = False
+visualize = False
+update = False
+project = 'res/runs/detect'
+name = 'exp'
+exist_ok = False
+line_thickness = 2
+hide_labels = False
+hide_conf = False
+half = False
+dnn = False
+# Load model
+device = select_device(device)
+# device='cpu'
+model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+
+@smart_inference_mode()
+def Yolov5(filename):
+    source = filename
+    vid_stride = 1
+
+    # is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
+
+    stride, names, pt = model.stride, model.names, model.pt
+    imgsz = check_img_size(imgsize, s=stride)  # check image size
+
+    # Dataloader
+    bs = 1  # batch_size
+
+    dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
+    vid_path, vid_writer = [None] * bs, [None] * bs
+
+    # Run inference
+    model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
+    seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
+    for path, im, im0s, vid_cap, s in dataset:
+        with dt[0]:
+            im = torch.from_numpy(im).to(model.device)
+            im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
+            im /= 255  # 0 - 255 to 0.0 - 1.0
+            if len(im.shape) == 3:
+                im = im[None]  # expand for batch dim
+
+        # Inference
+        with dt[1]:
+            pred, out = model(im, augment=augment, visualize=visualize)
+
+        # NMS
+        with dt[2]:
+            pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms,
+                                       max_det=max_det)
+
+        # Process predictions
+        for i, det in enumerate(pred):  # per image
+            seen += 1
+
+            p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
+
+            p = Path(p)  # to Path
+            s += '%gx%g ' % im.shape[2:]  # print string
+            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            imc = im0.copy() if save_crop else im0  # for save_crop
+            annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+            if len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
+
+                # Print results
+                for c in det[:, 5].unique():
+                    n = (det[:, 5] == c).sum()  # detections per class
+                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+
+                # Write results
+
+                Pos = []
+
+                for *xyxy, conf, cls in reversed(det):
+                    c = int(cls)  # integer class
+                    label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                    # if c == 0:
+                    annotator.box_label(xyxy, label, color=colors(c, True))
+
+                    # im0 = annotator.result()
+
+                    x_min = int(xyxy[0])
+                    y_min = int(xyxy[1])
+                    x_max = int(xyxy[2])
+                    y_max = int(xyxy[3])
+
+                    Pos.append([x_min, y_min, x_max, y_max])
+
+                return Pos
+import cv2
+
+# variables
+# distance from camera to object(face) measured
+KNOWN_DISTANCE = 76.2  # centimeter
+# width of face in the real world or Object Plane
+KNOWN_WIDTH = 14.3  # centimeter
+# Colors
+GREEN = (0, 255, 0)
+RED = (0, 0, 255)
+WHITE = (255, 255, 255)
+fonts = cv2.FONT_HERSHEY_COMPLEX
+cap = cv2.VideoCapture(1)
+
+# face detector object
+face_detector = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+
+
+# focal length finder function
+def focal_length(measured_distance, real_width, width_in_rf_image):
+    """
+    This Function Calculate the Focal Length(distance between lens to CMOS sensor), it is simple constant we can find by using
+    MEASURED_DISTACE, REAL_WIDTH(Actual width of object) and WIDTH_OF_OBJECT_IN_IMAGE
+    :param1 Measure_Distance(int): It is distance measured from object to the Camera while Capturing Reference image
+
+    :param2 Real_Width(int): It is Actual width of object, in real world (like My face width is = 14.3 centimeters)
+    :param3 Width_In_Image(int): It is object width in the frame /image in our case in the reference image(found by Face detector)
+    :retrun focal_length(Float):"""
+    focal_length_value = (width_in_rf_image * measured_distance) / real_width
+    return focal_length_value
+
+
+# distance estimation function
+def distance_finder(focal_length, real_face_width, face_width_in_frame):
+    """
+    This Function simply Estimates the distance between object and camera using arguments(focal_length, Actual_object_width, Object_width_in_the_image)
+    :param1 focal_length(float): return by the focal_length_Finder function
+
+    :param2 Real_Width(int): It is Actual width of object, in real world (like My face width is = 5.7 Inches)
+    :param3 object_Width_Frame(int): width of object in the image(frame in our case, using Video feed)
+    :return Distance(float) : distance Estimated
+    """
+
+    distance = (real_face_width * focal_length) / face_width_in_frame
+    return distance
+
+
+
+
+def face_data_modified(image, CallOut, Distance_level,bx):
+    """
+
+    This function Detect face and Draw Rectangle and display the distance over Screen
+
+    :param1 Image(Mat): simply the frame
+    :param2 Call_Out(bool): If want show Distance and Rectangle on the Screen or not
+    :param3 Distance_Level(int): which change the line according the Distance changes(Intractivate)
+    :return1  face_width(int): it is width of face in the frame which allow us to calculate the distance and find focal length
+    :return2 face(list): length of face and (face paramters)
+    :return3 face_center_x: face centroid_x coordinate(x)
+    :return4 face_center_y: face centroid_y coordinate(y)
+
+    """
+    face_width = 0
+    face_x, face_y = 0, 0
+    face_center_x = 0
+    face_center_y = 0
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    for (x, y, w, h) in bx[0]:
+        line_thickness = 2
+        # print(len(faces))
+        LLV = int(h * 0.12)
+        # print(LLV)
+
+        # cv2.rectangle(image, (x, y), (x+w, y+h), BLACK, 1)
+        cv2.line(image, (x, y + LLV), (x + w, y + LLV), (GREEN), line_thickness)
+        cv2.line(image, (x, y + h), (x + w, y + h), (GREEN), line_thickness)
+        cv2.line(image, (x, y + LLV), (x, y + LLV + LLV), (GREEN), line_thickness)
+        cv2.line(
+            image, (x + w, y + LLV), (x + w, y + LLV + LLV), (GREEN), line_thickness
+        )
+        cv2.line(image, (x, y + h), (x, y + h - LLV), (GREEN), line_thickness)
+        cv2.line(image, (x + w, y + h), (x + w, y + h - LLV), (GREEN), line_thickness)
+
+        face_width = w
+        face_center = []
+        # Drwaing circle at the center of the face
+        face_center_x = int(w / 2) + x
+        face_center_y = int(h / 2) + y
+        if Distance_level < 10:
+            Distance_level = 10
+
+        # cv2.circle(image, (face_center_x, face_center_y),5, (255,0,255), 3 )
+        if CallOut == True:
+            # cv2.line(image, (x,y), (face_center_x,face_center_y ), (155,155,155),1)
+            cv2.line(image, (x, y - 11), (x + 180, y - 11), (ORANGE), 28)
+            cv2.line(image, (x, y - 11), (x + 180, y - 11), (YELLOW), 20)
+            cv2.line(image, (x, y - 11), (x + Distance_level, y - 11), (GREEN), 18)
+
+            # cv2.circle(image, (face_center_x, face_center_y),2, (255,0,255), 1 )
+            # cv2.circle(image, (x, y),2, (255,0,255), 1 )
+
+        # face_x = x
+        # face_y = y
+
+    return face_width, bx, face_center_x, face_center_y
+
+Distance_level =  0
+# from Updated_distance import face_data, distance_finder, FocalLength
+
+codec = cv2.VideoWriter_fourcc(*'mp4v')
+
+output_video = cv2.VideoWriter('output_video.mp4', codec, 30, (640, 480))  # Adjust frame size as needed
+
+def distance_finding():
+    # Get list of frames
+    Distance_level = 0
+    # Sel_Frames = glob("Datasets/test2017/*.*")
+    frame_path = "Ref_image.png"
+    bx =[]
+    # Iterate through each frame
+    # for i, frame_path in enumerate(Sel_Frames):
+        # Load the frame
+    frame = cv2.imread(frame_path)
+    # Detect objects using YOLOv5
+    bound_boxes = Yolov5([frame_path])
+
+    if bound_boxes:
+        bx.append(bound_boxes)
+
+    # Draw bounding boxes on the frame
+    for j, box in enumerate(bx[0]):
+        xA, yA, xB, yB = map(int, box)  # Convert coordinates to integers
+        cv2.rectangle(frame, (xA, yA), (xB, yB), (0, 0, 255), 2)  # Draw bounding box
+        cropped_image = frame[yA:yB, xA:xB]
+
+        face_width_in_frame, Faces, FC_X, FC_Y = face_data_modified(cropped_image, False, Distance_level,bx)
+        Focal_length_found = focal_length(Known_distance, Known_width, face_width_in_frame)
+        print(Focal_length_found)
+        # cv2.imshow('Frame with Bounding Boxes', frame)
+        for (face_x, face_y, face_w, face_h) in Faces[0]:
+            if face_width_in_frame != 0:
+                Distance = distance_finder(
+                    Focal_length_found, Known_width, face_width_in_frame
+                )
+                Distance = round(Distance, 2)
+                # Drwaing Text on the screen
+                Distance_level = int(Distance)
+
+                final = cv2.putText(frame, f"Distance {Distance_level} Inches", (face_x - 6, face_y - 6), fonts, 0.5, (ORANGE),
+                            2, )
+
+                # Wait for a short delay (e.g., 100 milliseconds)
+                # cv2.waitKey(100)  # Adjust the delay as needed for the desired playback speed
+                # plt.imshow(frame)
+                # plt.show()
+                # Close the window if 'q' is pressed
+                # if cv2.waitKey(1) & 0xFF == ord('q'):
+                    #
+
+    return final
+
+
+# final = distance_finding()
+import cv2
+
+
+# Assuming you have a function to detect objects using YOLOv5 and it returns bounding box coordinates in 'bound_boxes'
+def detect_objects(frame_path):
+    # Load the frame
+    frame = cv2.imread(frame_path)
+
+    # Detect objects using YOLOv5
+    bound_boxes = Yolov5([frame_path])
+
+    return frame, bound_boxes
+
+def calculate_distance(bounding_box, camera_position):
+    # # Calculate the center point of the bounding box
+    # # x_center = (bounding_box[0] + bounding_box[2]) // 2
+    # # y_center = (bounding_box[1] + bounding_box[3]) // 2
+    #
+    # object_height = bounding_box[3] - bounding_box[1]  # yB - yA
+    # object_width = bounding_box[2] - bounding_box[0]
+    # angle = math.atan2(camera_position[1] - (bounding_box[1] + bounding_box[3]) / 2,
+    #                    camera_position[0] - (bounding_box[0] + bounding_box[2]) / 2)
+    #
+    # # Calculate the distance between the object and the camera based on the angle
+    # distance = object_height / (2 * math.tan(angle / 2))
+    # # Get camera position
+    # # camera_x, camera_y = camera_position
+    # # Calculate the distance between the camera and the center of the bounding box
+    # # distance = ((x_center - camera_x) ** 2 + (y_center - camera_y) ** 2) ** 0.5
+    # # Convert distance to meters (assuming a scaling factor based on pixel density)
+    # # distance_meters = distance * 0.01
+    # Calculate the height or width of the bounding box (object)
+    object_height = bounding_box[3] - bounding_box[1]  # yB - yA
+    object_width = bounding_box[2] - bounding_box[0]   # xB - xA
+
+    # Calculate the angle between the object and the camera's center using one of the corners
+    corner_x = bounding_box[0] if bounding_box[0] < camera_position[0] else bounding_box[2]
+    corner_y = bounding_box[1] if bounding_box[1] < camera_position[1] else bounding_box[3]
+    angle = math.atan2(camera_position[1] - corner_y, camera_position[0] - corner_x)
+
+    # Ensure angle is positive
+    if angle < 0:
+        angle += math.pi
+
+    # Calculate the distance between the object and the camera based on the angle (in pixels)
+    distance = object_height / (2 * math.tan(angle / 2))
+
+    return distance
+
+
+
+
+def draw_bounding_boxes(frame, bounding_boxes, camera_position):
+    # Iterate through each bounding box
+    for box in bounding_boxes:
+        xA, yA, xB, yB = map(int, box)  # Convert coordinates to integers
+
+        # Draw rectangular bounding box
+        cv2.rectangle(frame, (xA, yA), (xB, yB), (0, 0, 255), 2)
+
+        # Calculate distance between camera and object (center of bounding box)
+        distance = calculate_distance((xA, yA, xB, yB), camera_position)
+
+        # Write distance in meters on the bounded image
+        cv2.putText(frame, f"Distance: {distance:.2f} meters", (xA, yA - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0, 255, 0), 2)
+
+    return frame
+
+
+def main():
+    # Frame path
+    frame_path = "000000000318.jpg"
+
+    # Detect objects in the frame
+    frame, bounding_boxes = detect_objects(frame_path)
+
+    # Get the dimensions of the original image
+    frame_height, frame_width = frame.shape[:2]
+
+    # Camera position (assuming it's at the center of the image frame)
+    camera_position = (frame_width // 2, frame_height // 2)
+
+    # Draw bounding boxes, calculate distance, and write distance on the bounded image
+    final_frame = draw_bounding_boxes(frame, bounding_boxes, camera_position)
+
+    cv2.imwrite("final_image_with_distances.png", final_frame)
+
+    # Display the final image
+    cv2.imshow("Final Image", final_frame)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
+
+def position_attention(input_feature, ratio=8):
+    """
+        Position attention mechanism.
+
+        Args:
+            input_feature: Input feature.
+            ratio: Ratio for channel reduction.
+
+        Returns:
+            pam_feature: Output feature.
+        """
+    # channel_axis = 1 if K.image_data_format() == "channels_first" else -1
+    channel_axis = -1
+    channel = input_feature.shape[channel_axis]
+
+    shared_layer_one = Dense(channel // ratio,
+                             activation='relu',
+                             kernel_initializer='he_normal',
+                             use_bias=True,
+                             bias_initializer='zeros')
+    shared_layer_two = Dense(channel,
+                             kernel_initializer='he_normal',
+                             use_bias=True,
+                             bias_initializer='zeros')
+
+    avg_pool = GlobalAveragePooling2D()(input_feature)
+    avg_pool = Reshape((1, 1, channel))(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel)
+    avg_pool = shared_layer_one(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel // ratio)
+    avg_pool = shared_layer_two(avg_pool)
+    assert avg_pool.shape[1:] == (1, 1, channel)
+
+    max_pool = GlobalMaxPooling2D()(input_feature)
+    max_pool = Reshape((1, 1, channel))(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+    max_pool = shared_layer_one(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel // ratio)
+    max_pool = shared_layer_two(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+
+    max_pool = GlobalMaxPooling2D()(input_feature)
+    max_pool = Reshape((1, 1, channel))(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+    max_pool = shared_layer_one(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel // ratio)
+    max_pool = shared_layer_two(max_pool)
+    assert max_pool.shape[1:] == (1, 1, channel)
+
+    pam_feature = Add()([avg_pool, max_pool])
+    pam_feature = Activation('softmax')(pam_feature)
+
+    return multiply([input_feature, pam_feature])
+
+#Attention Mechnanism
+class ZeroChannelAttention:
+    def __init__(self):
+        self.avg_pool =  GlobalAveragePooling2D()
+        self.max_pool = GlobalMaxPooling2D()
+
+        self.sigmoid =Activation('sigmoid')
+
+    def forward(self, x):
+        self.avg_pool=self.avg_pool(x)
+        self.max_pool=self.max_pool(x)
+        self.x=Add()([self.avg_pool, self.max_pool])
+        self.x=self.sigmoid(self.x)
+        return self.x
+
+class ZeroSpatialAttention:
+    def __init__(self):
+        self.sigmoid =Activation('sigmoid')
+
+    def forward(self, X):
+        self.avg_out =  Lambda(lambda x: K.mean(x, axis=3, keepdims=True))(X)
+        self.max_out= Lambda(lambda x: K.max(x, axis=3, keepdims=True))(X)
+        self.x = Add()([self.avg_out, self.max_out])
+        self.x = self.sigmoid(self.x)
+        return self.x
+
+class HybridAttention:
+    def __init__(self, x,use_skip_connection=False):
+        self.x=x
+        self.ca = ZeroChannelAttention()
+        self.sa = ZeroSpatialAttention()
+        self.use_skip_connection = use_skip_connection
+
+    def forward(self):
+        out = self.x
+        out = out + out * self.sa.forward(out) if self.use_skip_connection else out * self.sa.forward(out)
+        out =out[:self.x.shape[0], :self.x.shape[1], :self.x.shape[2], :self.x.shape[3]]
+        ## Hybrid
+        out=np.array(out)
+        out=position_attention(out)
+        return out
+
+
+##COMPARITIVE
+
+#
+from sklearn.metrics import confusion_matrix
+import itertools
+
+from keras.utils.np_utils import to_categorical # convert to one-hot-encoding
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
+from keras.optimizers import RMSprop,Adam
+from keras.preprocessing.image import ImageDataGenerator
+from keras.callbacks import ReduceLROnPlateau
+
+model = Sequential()
+#
+model.add(Conv2D(filters = 8, kernel_size = (5,5),padding = 'Same',
+                 activation ='relu', input_shape = (28,28,1)))
+model.add(MaxPool2D(pool_size=(2,2)))
+model.add(Dropout(0.25))
+#
+model.add(Conv2D(filters = 16, kernel_size = (3,3),padding = 'Same',
+                 activation ='relu'))
+model.add(MaxPool2D(pool_size=(2,2), strides=(2,2)))
+model.add(Dropout(0.25))
+# fully connected
+model.add(Flatten())
+model.add(Dense(256, activation = "relu"))
+model.add(Dropout(0.5))
+model.add(Dense(10, activation = "softmax"))
+optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999)
+
+model.compile(optimizer = optimizer , loss = "categorical_crossentropy", metrics=["accuracy"])
+history = model.fit_generator(datagen.flow(X_train,Y_train, batch_size=batch_size),
+                              epochs = epochs, validation_data = (X_val,Y_val)
+
+
+##
+model = Sequential([
+
+    # reshape 28 row * 28 column data to 28*28 rows
+    Flatten(input_shape=(28, 28)),
+
+    # dense layer 1
+    Dense(256, activation='sigmoid'),
+
+    # dense layer 2
+    Dense(128, activation='sigmoid'),
+
+    # output layer
+    Dense(10, activation='sigmoid'),
+])
+model.compile(optimizer='adam',
+			loss='sparse_categorical_crossentropy',
+			metrics=['accuracy'])
+model.fit(x_train, y_train, epochs=10,
+		batch_size=2000,
+		validation_split=0.2)
+
+##
+from keras.models import Model
+from keras.layers import Input, Conv2D, Flatten, concatenate, Dense, SimpleRNN, Dropout, GlobalAveragePooling1D
+from keras.optimizers import Adam
+import numpy as np
+
+def ssd300_body(x):
+    source_layers = []
+    # Reduced SSD body
+    # Block 1
+    x = Conv2D(64, 3, strides=1, padding='same', name='conv1_1', activation='relu')(x)
+    x = Conv2D(64, 3, strides=1, padding='same', name='conv1_2', activation='relu')(x)
+    x = MaxPool2D(pool_size=2, strides=2, padding='same', name='pool1')(x)
+    source_layers.append(x)
+    return source_layers
+
+def SSD_RNN(input_shape=(299, 299, 3), rnn_units=10):
+    # SSD model
+    x = input_tensor = Input(shape=input_shape)
+    source_layers = ssd300_body(x)
+    # Reduced RNN model
+    rnn_input = Input(shape=(X_train.shape[1], 1))
+    rnn_output = SimpleRNN(units=rnn_units)(rnn_input)
+    # Concatenate SSD and RNN features
+    ssd_output = multibox_head(source_layers, num_priors)
+    combined_output = concatenate([ssd_output, rnn_output], axis=-1)
+    model = Model(inputs=[input_tensor, rnn_input], outputs=combined_output)
+    return model
+
+# Define input shapes
+ssd_input_shape = (299, 299, 3)
+rnn_input_shape = (X_train.shape[1], 1)
+
+# Instantiate SSD-RNN model
+SSD_RNN_model = SSD_RNN(input_shape=ssd_input_shape, rnn_units=10)
+
+# Compile model
+SSD_RNN_model.compile(optimizer=Adam(), loss='mse')
+
+# Train the model
+SSD_RNN_model.fit(x=[ssd_input_data, rnn_input_data], y=target_data, epochs=10, batch_size=32, validation_split=0.2)
+
+
